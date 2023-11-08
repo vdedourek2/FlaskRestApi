@@ -16,7 +16,7 @@
     <SuppressCollectPythonCloudServiceFiles>true</SuppressCollectPythonCloudServiceFiles>
     <Name>PythonFlaskRestApi</Name>
     <RootNamespace>PythonFlaskRestApi</RootNamespace>
-    <InterpreterId>MSBuild|envFlask2|C:\Users\vdedourek\source\repos\PythonApplication\PythonFlask\PythonFlask.pyproj</InterpreterId>
+    <InterpreterId>MSBuild|envFlaskRestAPI|$(MSBuildProjectFullPath)</InterpreterId>
     <EnableNativeCodeDebugging>False</EnableNativeCodeDebugging>
     <UseIISExpress>true</UseIISExpress>
   </PropertyGroup>
@@ -31,17 +31,24 @@
   <ItemGroup>
     <Compile Include="app.py" />
     <Compile Include="Processing\qna_lch_mod.py" />
-    <Compile Include="Processing\qna_sk_un_mod.py" />
   </ItemGroup>
   <ItemGroup>
     <Content Include=".env" />
     <Content Include="requirements.txt" />
   </ItemGroup>
   <ItemGroup>
-    <InterpreterReference Include="MSBuild|envFlask2|C:\Users\vdedourek\source\repos\PythonApplication\PythonFlask\PythonFlask.pyproj" />
+    <Folder Include="Processing\" />
   </ItemGroup>
   <ItemGroup>
-    <Folder Include="Processing\" />
+    <Interpreter Include="envFlaskRestAPI\">
+      <Id>envFlaskRestAPI</Id>
+      <Version>3.11</Version>
+      <Description>envFlaskRestAPI (Python 3.11 (64-bit))</Description>
+      <InterpreterPath>Scripts\python.exe</InterpreterPath>
+      <WindowsInterpreterPath>Scripts\pythonw.exe</WindowsInterpreterPath>
+      <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
+      <Architecture>X64</Architecture>
+    </Interpreter>
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.Web.targets" />
   <!-- Specify pre- and post-build commands in the BeforeBuild and 

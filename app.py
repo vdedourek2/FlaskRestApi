@@ -1,4 +1,13 @@
 """
+Library instalation:
+pip install load-dotenv       # environment variable service
+pip install Flask             # Flask framework
+pip install Flask-HTTPAuth    3 Simple extension that provides Basic and Digest HTTP authentication for Flask routes.
+"""
+
+
+
+"""
 Rest API server for KBA (Knowledge Base Assistent)
 Using KBAQnA Class
 

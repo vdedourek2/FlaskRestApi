@@ -26,6 +26,7 @@ pip install openai            # OpenAI
 pip install chromadb          # Chromadb database API
 pip install qdrant-client     # Qdrant database API
 pip install psycopg2          # PostgreSQL database API
+pip install tiktoken          # fast BPE tokeniser for use with OpenAI's models.
 '''
 
 import datetime

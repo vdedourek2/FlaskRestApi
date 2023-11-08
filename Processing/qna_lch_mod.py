@@ -23,10 +23,14 @@ Library instalation:
 pip install load-dotenv       # environment variable service
 pip install langchain         # framework for LLM
 pip install openai            # OpenAI
-pip install chromadb          # Chromadb database API
+pip install chromadb==0.3.29  # Chromadb database API (ver 0.3.29 needed for compatibility with sqlite3)
 pip install qdrant-client     # Qdrant database API
 pip install psycopg2          # PostgreSQL database API
 pip install tiktoken          # fast BPE tokeniser for use with OpenAI's models.
+
+In LINUX installation on Azure:
+from requirements delete pywin32
+reject file .env
 '''
 
 import datetime

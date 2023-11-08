@@ -1,5 +1,4 @@
 """
-X1
 Rest API server for KBA (Knowledge Base Assistent)
 Using KBAQnA Class
 

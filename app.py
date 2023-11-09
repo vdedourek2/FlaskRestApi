@@ -14,7 +14,7 @@ Using KBAQnA Class
 
 Rest API definition:
 
-/qna - Question / Answer service. It cooperates with class KBAQnA. Use embeddings in vector database Qdrant, where are prepared embeddings data if a project.
+/qna - Question / Answer service. It cooperates with class KBAQnA. Use embeddings in vector database Qdrant, where are prepared embeddings data for the project.
         POST method.
     Input:
     {
@@ -119,6 +119,7 @@ Rest API definition:
             "system_msg":           system_msg,
             "api_model":            api_model,
             "answer_time":          answer_time,
+            "citation:              citation
         } 
                 
     Parameters:      
@@ -131,7 +132,7 @@ Rest API definition:
                          gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
             For azure: deployment name         
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time 
-
+        citation - True - at the end of answer add web page references, False - without web page references
 --------------------------------------------------------------------------------------------------------------
 
 /set_project_par - Set project parameters
@@ -141,6 +142,7 @@ Rest API definition:
             ["system_msg":           system_msg,]
             ["api_model":            api_model,]
             ["answer_time":          answer_time,]
+            ["citation:              citation,]
             ["erase_history":        erase_history]
         } 
            
@@ -153,7 +155,8 @@ Rest API definition:
                          gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
             For azure: deployment name         
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time (if is None or isn't presented then is unchanged)
-
+        citation - True - at the end of answer add web page references, False - without web page references (if is None or isn't presented then is unchanged)
+        erase_history - True - question/answer history will be erased, False - question/answer history will not be erased (defasult False)
 --------------------------------------------------------------------------------------------------------------
 
 Authorization (Basic Auth):
@@ -332,6 +335,7 @@ def process_get_srv_par():
             "system_msg":           system_msg,
             "api_model":            api_model,
             "answer_time":          answer_time,
+            "citation:              citation
         } 
                 
     Parameters:      
@@ -344,6 +348,7 @@ def process_get_srv_par():
                          gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
             For azure: deployment name         
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time 
+        citation - True - at the end of answer add web page references, False - without web page references
 """
 @app.route('/get_project_par/<project>', methods=['GET'])
 @auth.login_required
@@ -433,6 +438,7 @@ def process_set_srv_par():
             ["system_msg":           system_msg,]
             ["api_model":            api_model,]
             ["answer_time":          answer_time,]
+            ["citation:              citation,]
             ["erase_history":        erase_history]
         } 
            
@@ -445,6 +451,8 @@ def process_set_srv_par():
                          gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
             For azure: deployment name         
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time (if is None or isn't presented then is unchanged)
+        citation - True - at the end of answer add web page references, False - without web page references (if is None or isn't presented then is unchanged)
+        erase_history - True - question/answer history will be erased, False - question/answer history will not be erased (defasult False)
 """
 @app.route('/set_project_par', methods=['POST'])
 @auth.login_required
@@ -467,6 +475,7 @@ def process_set_project_par():
         system_msg          = "" if "system_msg" not in input_data else input_data["system_msg"]
         api_model           = "" if "api_model" not in input_data else input_data["api_model"]
         answer_time         = None if "answer_time" not in input_data else input_data["answer_time"]
+        citation            = None if "citation" not in input_data else input_data["citation"]
         erase_history       = False if "erase_history" not in input_data else input_data["erase_history"]
 
         qa.set_project_par(
@@ -474,6 +483,7 @@ def process_set_project_par():
             system_msg = system_msg,
             api_model = api_model,
             answer_time = answer_time,
+            citation = citation,
             erase_history = erase_history,
             )
 

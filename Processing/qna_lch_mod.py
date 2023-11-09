@@ -23,14 +23,9 @@ Library instalation:
 pip install load-dotenv       # environment variable service
 pip install langchain         # framework for LLM
 pip install openai            # OpenAI
-pip install chromadb==0.3.29  # Chromadb database API (ver 0.3.29 needed for compatibility with sqlite3)
+pip install chromadb          # Chromadb database API
 pip install qdrant-client     # Qdrant database API
 pip install psycopg2          # PostgreSQL database API
-pip install tiktoken          # fast BPE tokeniser for use with OpenAI's models.
-
-In LINUX installation on Azure:
-from requirements delete pywin32
-reject file .env
 '''
 
 import datetime
@@ -114,7 +109,7 @@ class KBAQnA(object):
             
         self.history  = []   # chat history [("project":project, "user_id":user_id, "last_time":last_time, "history":[(question, answer),...]), ...]
         self.projects = {}   # projects parameters dictionary {"project_name": 
-                             #   {"id_project":id_project, "system_msg":system_msg, "api_model":api_model, "answer_time":answer_time}}
+                             #   {"id_project":id_project, "system_msg":system_msg, "api_model":api_model, "answer_time":answer_time, "citation":citation}}
         
     def set_cls_par(self,
         db_type:str = "",
@@ -137,7 +132,7 @@ class KBAQnA(object):
             local - local Chroma DB in db directory, 
             qdrant - Qdrant database. Needs environment variables: QDRANT_URL, QDRANT_API_KEY
         db_dir - directory, where is saved local vector Chroma db (only for db = local) (if empty then unchanged)
-        system_msg - short chatbot description (if empty then unchanged)
+        system_msg - short chatbot description (if empty then it is unchanged)
         k_history - the maximum length of history that is used for the conversation (if None then unchanged)
         time_limit_history - the time interval in seconds after which the history is cleared (if None then unchanged)
         verbose - True - logging process question/answer, False - without logging (if None then unchanged)
@@ -216,6 +211,7 @@ class KBAQnA(object):
         system_msg:str  = "",
         api_model:str = "",
         answer_time:  bool = None,
+        citation:     bool = None,
         erase_history:bool = False,
         ):
         '''
@@ -229,8 +225,9 @@ class KBAQnA(object):
         api_model - model of the ChatGPT API. (if empty then environment variable "OPENAI_API_MODEL_GPT" is used)
             For open_ai: gpt-3.5-turbo, gpt-3.5-turbo-0613, gpt-3.5-turbo-16k, gpt-3.5-turbo-16k-0613
                          gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
-            For azure: deployment name         
+            For azure: deployment name
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time (if is None then is unchanged)
+        citation - True - at the end of answer add web page references, False - without web page references (if is None then is unchanged)
         '''       
         
         self._get_project_par(project)
@@ -245,6 +242,9 @@ class KBAQnA(object):
 
         if answer_time != None:
             item["answer_time"] = answer_time
+  
+        if citation != None:
+            item["citation"] = citation
   
         self.projects[project] = item
 
@@ -262,14 +262,14 @@ class KBAQnA(object):
         ----------------------------------------------------------------------------------------
         project - project name (is collection name in vector db). Is mandatory.
 
-        Parameters: (when is empty or None then are unchanged)
-        system_msg - partial text which will be added at the begin of the system message (if is empty then is unchanged)  
-        api_model - model of the ChatGPT API. (if empty then environment variable "OPENAI_API_MODEL_GPT" is used)
+        Parameters:
+        system_msg - partial text which will be added at the begin of the system message 
+        api_model - model of the ChatGPT API.
             For open_ai: gpt-3.5-turbo, gpt-3.5-turbo-0613, gpt-3.5-turbo-16k, gpt-3.5-turbo-16k-0613
                          gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
             For azure: deployment name         
-        answer_time - True - answer is with elapsed time,  False - answer is without elapsed time (if is None then is unchanged)
-
+        answer_time - True - answer is with elapsed time,  False - answer is without elapsed time
+        citation - True - at the end of answer add web page references, False - without web page references
         '''       
         
         if project not in self.projects:
@@ -281,6 +281,7 @@ class KBAQnA(object):
             "system_msg":   item["system_msg"],
             "api_model":    item["api_model"],
             "answer_time":  item["answer_time"],
+            "citation":     item["citation"],
             }
 
 
@@ -319,7 +320,7 @@ class KBAQnA(object):
         history = self._get_history(project, user_id)   # get a last conversation history
         
         # getting project parameters
-        (id_project, pr_system_message, pr_api_model, pr_answer_time) = self._get_project_par(project)
+        (id_project, pr_system_message, pr_api_model, pr_answer_time, citation) = self._get_project_par(project)
 
         if system_msg == "":
             system_msg = pr_system_message
@@ -344,7 +345,10 @@ class KBAQnA(object):
             elapsed_time = et - st,
         )
 
-        
+        if citation:
+            answer += self._get_citation(response)
+
+
         if pr_answer_time:
             answer += f" ({round(et - st, 3)} s)"
             
@@ -491,8 +495,46 @@ If you don't know the answer, just say that you don't know, don't try to make up
             retriever = vectordb.as_retriever(),
             verbose=self.verbose,
             combine_docs_chain_kwargs={'prompt': qa_prompt},
+            return_source_documents=self.projects[project]["citation"],       
         )
             
+
+    def _get_citation(self,
+        response    
+        ):
+        """
+        Return reference list to web pages.
+        For example
+        
+        Další informace:
+        1. https://www.multima.cz
+        2. https://www.multima.cz/mentor
+        3. https://www.keymate.cz
+        -------------------------------------------------------------------------
+        response - responce object from ConversationalRetrievalChain()
+
+        returns text citation list
+        """
+        reference_list = [] 
+        
+        # select web references with order
+        for item in response["source_documents"]:
+            ref = item.metadata["source"]
+            if ref.startswith("https:") and ref not in reference_list:
+                reference_list.append(ref)
+
+        # create reference text
+        citation_text = ""
+        for row, item in enumerate(reference_list):
+            citation_text += f"\n{row + 1}. {item}"
+
+            if row >= 2:
+                break;
+
+        if citation_text != "":
+            citation_text = "\nDalší informace:" + citation_text
+
+        return citation_text
 
     def _get_project_par(self,
         project:str = "",
@@ -503,15 +545,20 @@ If you don't know the answer, just say that you don't know, don't try to make up
         -------------------------------------------------------------------------
         project - project name. Is mandatory.
 
-        returns (system_msg, api_model, answer_time)
+        returns (system_msg, api_model, answer_time, citation)
         """
  
         if project not in self.projects:
-            self.projects[project] = {"id_project":None, "system_msg":self.system_msg, "api_model":os.environ["OPENAI_API_MODEL_GPT"], "answer_time":self.answer_time}
+            self.projects[project] = {"id_project":None,
+                                      "system_msg":self.system_msg,
+                                      "api_model":os.environ["OPENAI_API_MODEL_GPT"],
+                                      "answer_time":self.answer_time,
+                                      "citation":False,
+                                      }
             
         item = self.projects[project]
         
-        return (item["id_project"], item["system_msg"], item["api_model"], item["answer_time"])
+        return (item["id_project"], item["system_msg"], item["api_model"], item["answer_time"], item["citation"])
     
 
     def _write_db_log(self,

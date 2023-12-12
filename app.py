@@ -183,6 +183,7 @@ import os
 from flask import Flask, request, jsonify
 from flask_httpauth import HTTPBasicAuth # Flask-HTTPAuth
 from werkzeug.security import generate_password_hash, check_password_hash
+from langchain.chains.query_constructor.base import AttributeInfo
 from Processing.qna_lch_mod import KBAQnA
 
 
@@ -193,6 +194,68 @@ qa = KBAQnA(
     system_msg = system_msg,
     answer_time = False,
     verbose = False)
+
+
+# setup www.mulouny.cz
+self_doc_descr = "Informace o obsluhovaných situacích městského úřadu Louny."
+
+sekce = "'Osobní doklady', 'Živnosti', 'Finance', 'ŽS různé', 'Majetek města', 'Stavební činnost', 'Životní prostředí', 'Památková péče', 'Matrika'," +\
+        " 'Doprava ostatní', 'Doprava a komunikace', 'Registr vozidel', 'Registr řidičů', 'Jiné'" 
+
+self_metadata = [
+    AttributeInfo(
+        name="situace",
+        description="Název obsluhované situace",
+        type="string",
+    ),
+    AttributeInfo(
+        name="sekce",
+        description="Název sekce, do které spadá obsluhovaná situace. Jedna z [" + sekce + "]",
+        type="string",
+    ),
+    AttributeInfo(
+        name="keywords",
+        description="Seznam klíčovách výrazů oddělených čárkou, které charakterizují obsluhovanou situaci",
+        type="string",
+    ),
+ ]
+
+qa.set_project_par(project="www.mulouny.cz", api_model="gpt-3.5-turbo-1106", citation=False, self_doc_descr = self_doc_descr, self_metadata = self_metadata)
+
+
+# setup www.multima.cz
+self_doc_descr = "Informace o produktech, službách a aktivitách společnosti Multima."
+
+self_metadata = [
+    AttributeInfo(
+        name="subject",
+        description="Jaké jsou převažující informace v textu. Jeden z ['Produkty', 'Služby', 'Kontaktní informace', 'Kariéra', 'Informace o firmě', 'Jiné']",
+        type="string",
+    ),
+    AttributeInfo(
+        name="price_list",
+        description="Zda je v textu obsažen ceník.",
+        type="boolean",
+    ),
+    AttributeInfo(
+        name="product",
+        description="Název produktu nabízeného Multimou. Jeden z ['Nathan AI', 'Dokladovna', 'Keymate', 'Odtahovka', 'Mentor', 'Řízená dokumentace', 'Multiskills']",
+        type="string",
+    ),
+    AttributeInfo(
+        name="service",
+        description="Název služby nabízené Multimou. Jeden z ['Vývoj software', 'Integrace', 'AI - umělá inteligence', 'Cloudifikace', 'Powerapps', 'Sharepoint', 'Správa obsahu v Microsoft 365']",
+        type="string",
+    ),
+    AttributeInfo(
+        name="case_study",
+        description="Název případové studie nabízené Multimou. Jeden z ['Pojišťovny', 'Farmacie']",
+        type="string",
+    ),
+]
+
+qa.set_project_par(project="www.multima.cz", api_model="gpt-3.5-turbo-1106", citation=False, self_doc_descr = self_doc_descr, self_metadata = self_metadata)
+
 
 app = Flask(__name__)
 
@@ -354,7 +417,9 @@ def process_get_srv_par():
 @auth.login_required
 def process_get_project_par(project):
     try:
-        return jsonify(qa.get_project_par(project)), 200
+        dictionary = qa.get_project_par(project)
+        del dictionary["self_metadata"]
+        return jsonify(dictionary), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

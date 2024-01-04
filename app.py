@@ -21,12 +21,6 @@ Rest API definition:
         "question":     question,
         "user_id":      user_id,
         "project":      project,
-        [system_msg":   system_msg,]
-        ["api_type":     api_type,]
-        ["api_base":     api_base,]
-        ["api_key":      api_key,]
-        ["api_version":  api_version,]
-        ["api_model":    api_model,]
     } 
 
     Output:
@@ -39,16 +33,7 @@ Rest API definition:
         question - question (is mandatory)
         user_id - unique user id (is mandatory)
         project - project name (is collection name in vector db). Is mandatory.
-        system_msg - partial text which will be added at the begin of the system message (can be empty)
-        api_type - OpenAI type - open_ai, azure (if empty then environment variable "OPENAI_API_TYPE" is used )
-        api_base - URL base of the ChatGPT API (if empty then environment variable "OPENAI_API_BASE" is used 
-        api_key - API key of the ChatGPT (if empty then environment variable "OPENAI_API_KEY" is used)
-        api_version - version of the ChatGPT API (if empty then environment variable "OPENAI_API_VERSION" is used)
-        api_model - model of the ChatGPT API. (if empty then environment variable "OPENAI_API_MODEL_GPT" is used)
-            For open_ai: gpt-3.5-turbo, gpt-3.5-turbo-0613, gpt-3.5-turbo-16k, gpt-3.5-turbo-16k-0613
-                         gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
-            For azure: deployment name
-            
+              
         answer - answer
         error - normally it is empty. It contains a text error if there is a problem
 --------------------------------------------------------------------------------------------------------------
@@ -115,11 +100,13 @@ Rest API definition:
 
     Output:
         {
-            "project":              project,
-            "system_msg":           system_msg,
-            "api_model":            api_model,
-            "answer_time":          answer_time,
-            "citation:              citation
+            "system_msg":               system_msg,
+            "api_model":                api_model,
+            "answer_time":              answer_time,
+            "citation:                  citation,
+            "self_doc_descr":           self_doc_descr,
+            "metadata_parent_field" :   metadata_parent_field,
+            "k":                        k,     
         } 
                 
     Parameters:      
@@ -133,17 +120,23 @@ Rest API definition:
             For azure: deployment name         
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time 
         citation - True - at the end of answer add web page references, False - without web page references
+        self_doc_descr - document description for Self Retriever
+        metadata_parent_field - Metadata field for parent doc
+        k - number of chunks retrieved from a vector database    
 --------------------------------------------------------------------------------------------------------------
 
 /set_project_par - Set project parameters
         POST method.
         {
-            "project":              project,
-            ["system_msg":           system_msg,]
-            ["api_model":            api_model,]
-            ["answer_time":          answer_time,]
-            ["citation:              citation,]
-            ["erase_history":        erase_history]
+            "project":                  project,
+            ["system_msg":              system_msg,]
+            ["api_model":               api_model,]
+            ["answer_time":             answer_time,]
+            ["citation:                 citation,]
+            ["self_doc_descr":          self_doc_descr,]
+            ["metadata_parent_field" :  metadata_parent_field,]
+            ["k":                       k,]            
+            ["erase_history":           erase_history]
         } 
            
         Parameters: (when is empty or None then are unchanged)
@@ -156,7 +149,24 @@ Rest API definition:
             For azure: deployment name         
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time (if is None or isn't presented then is unchanged)
         citation - True - at the end of answer add web page references, False - without web page references (if is None or isn't presented then is unchanged)
-        erase_history - True - question/answer history will be erased, False - question/answer history will not be erased (defasult False)
+        self_doc_descr - document description for Self Retriever (if is empty then is unchanged)  
+        metadata_parent_field - Metadata field for parent doc (if is empty then is unchanged)  
+        k - number of chunks retrieved from a vector database (if is None or isn't presented then is unchanged)          
+        erase_history - True - question/answer history will be erased, False - question/answer history will not be erased (default False)
+--------------------------------------------------------------------------------------------------------------
+
+/set_retriever_par - Set project retrievers
+        POST method.
+        {
+            "project":              project,
+            "retriever_weights":    []
+        } 
+           
+        Parameters: 
+        project - project name (is collection name in vector db). Is mandatory.
+        retriever_weights - [w1, w2, w3, w4, w5]
+            (EmbeddingRetriever, SelfRetriever, BM25, MultiRetriever, SelfRetrieverParent)
+            wi is <0, 1> where w1 + w2 + w3 + w4 + w5 = 1
 --------------------------------------------------------------------------------------------------------------
 
 Authorization (Basic Auth):
@@ -180,8 +190,10 @@ input data:
 """
 from dotenv import load_dotenv      # python-dotenv
 import os
+from datetime import datetime
 from flask import Flask, request, jsonify
-from flask_httpauth import HTTPBasicAuth # Flask-HTTPAuth
+from flask_httpauth import HTTPBasicAuth
+# from werkzeug.datastructures.structures import K # Flask-HTTPAuth
 from werkzeug.security import generate_password_hash, check_password_hash
 from langchain.chains.query_constructor.base import AttributeInfo
 from Processing.qna_lch_mod import KBAQnA
@@ -197,6 +209,15 @@ qa = KBAQnA(
 
 
 # setup www.mulouny.cz
+######################
+system_msg = """Jsi AI asistent na webu městského úřadu Louny a řešíš pouze agendy městského úřadu. \
+Odpovídáš na základě Vědomostí dodaných uživatelem. \
+Pokud není na základě uvedených vědomostí možné jednoznačně odpovědět na otázku, odpověz "Nevím".
+
+Příklad, pokud informace není obsažena ve vědomostech:
+Uživatel: kde najdu vysokou školu v Lounech?
+Asistent: Nevím"""
+
 self_doc_descr = "Informace o obsluhovaných situacích městského úřadu Louny."
 
 sekce = "'Osobní doklady', 'Živnosti', 'Finance', 'ŽS různé', 'Majetek města', 'Stavební činnost', 'Životní prostředí', 'Památková péče', 'Matrika'," +\
@@ -208,22 +229,23 @@ self_metadata = [
         description="Název obsluhované situace",
         type="string",
     ),
-    AttributeInfo(
-        name="sekce",
-        description="Název sekce, do které spadá obsluhovaná situace. Jedna z [" + sekce + "]",
-        type="string",
-    ),
-    AttributeInfo(
-        name="keywords",
-        description="Seznam klíčovách výrazů oddělených čárkou, které charakterizují obsluhovanou situaci",
-        type="string",
-    ),
- ]
+]
 
-qa.set_project_par(project="www.mulouny.cz", api_model="gpt-3.5-turbo-1106", citation=False, self_doc_descr = self_doc_descr, self_metadata = self_metadata)
-
+qa.set_project_par(project="www.mulouny.cz", system_msg = system_msg, api_model="gpt35", citation=False, self_doc_descr = self_doc_descr,
+                   self_metadata = self_metadata, k = 20, metadata_parent_field = "cislo_zs")
+# (EmbeddingRetriever, SelfRetriever, BM25, MultiRetriever, SelfRetrieverParent)
+qa.set_project_retriever(project="www.mulouny.cz", retriever_weights= (0, 0, 0, 0, 1))
 
 # setup www.multima.cz
+#######################
+system_msg = """Jsi AI asistent na webu Multima a odpovídáš pouze na dotazy, které se týkají Multimy. \
+Odpovídáš na základě Vědomostí dodaných uživatelem. \
+Pokud není na základě uvedených vědomostí možné jednoznačně odpovědět na otázku, odpověz "Nevím".
+
+Příklad, pokud informace není obsažena ve vědomostech:
+Uživatel: kde je v Pardubicích železniční stanice?
+Asistent: Nevím"""
+
 self_doc_descr = "Informace o produktech, službách a aktivitách společnosti Multima."
 
 self_metadata = [
@@ -254,8 +276,10 @@ self_metadata = [
     ),
 ]
 
-qa.set_project_par(project="www.multima.cz", api_model="gpt-3.5-turbo-1106", citation=False, self_doc_descr = self_doc_descr, self_metadata = self_metadata)
-
+qa.set_project_par(project="www.multima.cz", system_msg = system_msg, api_model="gpt35", citation=False, self_doc_descr = self_doc_descr,
+                   self_metadata = self_metadata, k=10)
+# (EmbeddingRetriever, SelfRetriever, BM25, MultiRetriever, SelfRetrieverParent)
+qa.set_project_retriever(project="www.multima.cz", retriever_weights= (0, 1, 0, 0, 0))
 
 app = Flask(__name__)
 
@@ -270,7 +294,11 @@ users = {
 }
 
 app.secret_key = os.getenv("FLASK_SECRET_KEY")
-print("Start KBA")
+
+# Format the current date and time as DD.MM.YYYY HH:MM:SS
+formatted_datetime = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+
+print(f"*** Start KBA {formatted_datetime} ***")
 
 
 @auth.verify_password
@@ -288,13 +316,7 @@ def verify_password(username, password):
         "question":     question,
         "user_id":      user_id,
         "project":      project,
-        [system_msg":   system_msg,]
-        ["api_type":     api_type,]
-        ["api_base":     api_base,]
-        ["api_key":      api_key,]
-        ["api_version":  api_version,]
-        ["api_model":    api_model,]
-    } 
+     } 
 
     Output:
     {
@@ -323,23 +345,10 @@ def process_qna():
         if "project" not in input_data:
             return jsonify({"error": "project is missing"}), 400
 
-        system_msg  = "" if "system_msg" not in input_data else input_data["system_msg"]
-        api_type    = "" if "api_type" not in input_data else input_data["api_type"]
-        api_base    = "" if "api_base" not in input_data else input_data["api_base"]
-        api_key     = "" if "api_key" not in input_data else input_data["api_key"]
-        api_version = "" if "api_version" not in input_data else input_data["api_version"]
-        api_model   = "" if "api_model" not in input_data else input_data["api_model"]
-
         answer = qa.answer_question(
             question = input_data["question"],
             user_id = input_data["user_id"],
             project = input_data["project"],
-            system_msg = system_msg,
-            api_type = api_type,
-            api_base = api_base,
-            api_key = api_key,
-            api_version = api_version,
-            api_model = api_model,
             )
 
         # Process the input data (modify this part based on your logic)
@@ -394,11 +403,13 @@ def process_get_srv_par():
 
     Output:
         {
-            "project":              project,
-            "system_msg":           system_msg,
-            "api_model":            api_model,
-            "answer_time":          answer_time,
-            "citation:              citation
+            "system_msg":               system_msg,
+            "api_model":                api_model,
+            "answer_time":              answer_time,
+            "citation:                  citation,
+            "self_doc_descr":           self_doc_descr,
+            "metadata_parent_field" :   metadata_parent_field,
+            "k":                        k,     
         } 
                 
     Parameters:      
@@ -412,6 +423,9 @@ def process_get_srv_par():
             For azure: deployment name         
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time 
         citation - True - at the end of answer add web page references, False - without web page references
+        self_doc_descr - document description for Self Retriever
+        metadata_parent_field - Metadata field for parent doc
+        k - number of chunks retrieved from a vector database        
 """
 @app.route('/get_project_par/<project>', methods=['GET'])
 @auth.login_required
@@ -499,12 +513,15 @@ def process_set_srv_par():
 /set_project_par - Set project parameters
         POST method.
         {
-            "project":              project,
-            ["system_msg":           system_msg,]
-            ["api_model":            api_model,]
-            ["answer_time":          answer_time,]
-            ["citation:              citation,]
-            ["erase_history":        erase_history]
+            "project":                  project,
+            ["system_msg":              system_msg,]
+            ["api_model":               api_model,]
+            ["answer_time":             answer_time,]
+            ["citation:                 citation,]
+            ["self_doc_descr":          self_doc_descr,]
+            ["metadata_parent_field" :  metadata_parent_field,]
+            ["k":                       k,]            
+            ["erase_history":           erase_history]
         } 
            
         Parameters: (when is empty or None then are unchanged)
@@ -517,7 +534,10 @@ def process_set_srv_par():
             For azure: deployment name         
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time (if is None or isn't presented then is unchanged)
         citation - True - at the end of answer add web page references, False - without web page references (if is None or isn't presented then is unchanged)
-        erase_history - True - question/answer history will be erased, False - question/answer history will not be erased (defasult False)
+        self_doc_descr - document description for Self Retriever (if is empty then is unchanged)  
+        metadata_parent_field - Metadata field for parent doc (if is empty then is unchanged)  
+        k - number of chunks retrieved from a vector database (if is None or isn't presented then is unchanged)          
+        erase_history - True - question/answer history will be erased, False - question/answer history will not be erased (default False)
 """
 @app.route('/set_project_par', methods=['POST'])
 @auth.login_required
@@ -537,11 +557,15 @@ def process_set_project_par():
         if "project" not in input_data:
             return jsonify({"error": "project is missing"}), 400
  
-        system_msg          = "" if "system_msg" not in input_data else input_data["system_msg"]
-        api_model           = "" if "api_model" not in input_data else input_data["api_model"]
-        answer_time         = None if "answer_time" not in input_data else input_data["answer_time"]
-        citation            = None if "citation" not in input_data else input_data["citation"]
-        erase_history       = False if "erase_history" not in input_data else input_data["erase_history"]
+        system_msg              = "" if "system_msg" not in input_data else input_data["system_msg"]
+        api_model               = "" if "api_model" not in input_data else input_data["api_model"]
+        answer_time             = None if "answer_time" not in input_data else input_data["answer_time"]
+        citation                = None if "citation" not in input_data else input_data["citation"]
+        self_doc_descr          = None if "self_doc_descr" not in input_data else input_data["self_doc_descr"]
+        metadata_parent_field   = None if "metadata_parent_field" not in input_data else input_data["metadata_parent_field"]
+        k                       = None if "k" not in input_data else input_data["k"]
+        
+        erase_history           = False if "erase_history" not in input_data else input_data["erase_history"]
 
         qa.set_project_par(
             project = input_data["project"],
@@ -549,6 +573,9 @@ def process_set_project_par():
             api_model = api_model,
             answer_time = answer_time,
             citation = citation,
+            self_doc_descr = self_doc_descr,
+            metadata_parent_field = metadata_parent_field,        
+            k = k,            
             erase_history = erase_history,
             )
 
@@ -557,7 +584,51 @@ def process_set_project_par():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+"""
+/set_retriever_par - Set project retrievers
+        POST method.
+        {
+            "project":              project,
+            "retriever_weights":    []
+        } 
+           
+        Parameters: 
+        project - project name (is collection name in vector db). Is mandatory.
+        retriever_weights - [w1, w2, w3, w4, w5]
+            (EmbeddingRetriever, SelfRetriever, BM25, MultiRetriever, SelfRetrieverParent)
+            wi is <0, 1> where w1 + w2 + w3 + w4 + w5 = 1
+"""
+@app.route('/set_retriever_par', methods=['POST'])
+@auth.login_required
+def process_set_retriever_par():
+    if auth.current_user() != "admin":
+        return jsonify({"error": "For operation is needed admin permission."}), 401
+
+    try:
+
+        # Get the JSON data from the request
+        input_data = request.json
+
+        # Validate the input data (you can add more validation if needed)
+        if not isinstance(input_data, dict):
+            return jsonify({"error": "Invalid JSON input"}), 400
+        
+        if "project" not in input_data:
+            return jsonify({"error": "project is missing"}), 400
+        
+        retriever_weights = tuple(input_data["retriever_weights"])
+ 
+        qa.set_project_retriever(
+            project = input_data["project"],
+            retriever_weights = retriever_weights,
+            )
+
+        return jsonify({}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
+# RUN APPLICATION -------------------------------------------------------------------------
 if __name__ == '__main__':
     app.run()

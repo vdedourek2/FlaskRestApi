@@ -1,10 +1,4 @@
 # Requests:
-# 1 - Initialize history for user_id + cearing -  OK
-# 2 - Implement recursive web crawler - OK
-# 3 - Implement getting metadata information for result answer
-# 4 - multiproject solution - OK
-# 5 - question/answer logging - OK
-# 6 - connection pool - OK
 #-------------------------------------------------------------
 # Challenges:
 # - attack protection
@@ -12,7 +6,7 @@
 
 
 ''' 
-KBAQnA - Class for talking with Knowledge Assistent on Vectore database data
+KBAQnA - Class for talking with Knowledge Base Assistent on Vectore database data
         which are created by KBAIndex class (based on Langchain)
 
 Sources:
@@ -25,8 +19,6 @@ pip install langchain         # framework for LLM
 pip install openai            # OpenAI
 pip install chromadb          # Chromadb database API
 pip install qdrant-client     # Qdrant database API
-pip install psycopg2          # PostgreSQL database API
-pip install SQLAlchemy        # The Python SQL Toolkit and Object Relational Mapper
 pip install lark              # Needed for SelfQuerying
 '''
 
@@ -34,33 +26,24 @@ from dotenv import load_dotenv      # python-dotenv
 import os
 import time
 import ast
+import pickle
+import logging
 from openai import OpenAI, AzureOpenAI
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.embeddings import AzureOpenAIEmbeddings
+from langchain.callbacks import get_openai_callback
 from langchain.chat_models import ChatOpenAI, AzureChatOpenAI
-from langchain.vectorstores import Chroma, Qdrant
-from langchain.chains import ConversationalRetrievalChain
-from langchain.chains.query_constructor.base import AttributeInfo
-from langchain.retrievers.self_query.base import SelfQueryRetriever
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnableParallel, RunnablePassthrough
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain.chains.query_constructor.base import StructuredQueryOutputParser, get_query_constructor_prompt
+from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate, MessagesPlaceholder
+
+from operator import itemgetter
 from qdrant_client import QdrantClient
 import chromadb
-import psycopg2
-import sqlalchemy.pool as pool
-
-from langchain.prompts import (
-    ChatPromptTemplate,
-    SystemMessagePromptTemplate,
-    HumanMessagePromptTemplate,
-)
-
-
-def getconn():
-    return psycopg2.connect(
-        user=os.getenv("SQLDB_UID"),
-        password=os.getenv("SQLDB_PWD"),
-        host=os.getenv("SQLDB_HOST"),
-        dbname=os.getenv("SQLDB_DATABASE"))
-
+from Processing.db_mod import KBADatabase
+from Processing.project_mod import Project
 
 class KBAQnA(object):
     '''
@@ -86,7 +69,6 @@ class KBAQnA(object):
         db_type:str = "local",
         db_dir:str = "",
         system_msg:str  = "",
-        k:            int  = 3,
         k_history:    int  = 3,
         time_limit_history: int = 3600,
         verbose:      bool = False,
@@ -97,48 +79,73 @@ class KBAQnA(object):
         
         self.db_type            = db_type
         self.db_dir             = db_dir
-        self.system_msg         = system_msg
-        self.k                  = k
         self.k_history          = k_history
         self.verbose            = verbose
         self.answer_time        = answer_time
         self.time_limit_history = time_limit_history
-        # self.self_doc_descr     = self_doc_descr
-        # self.self_metadata      = self_metadata
+        self.system_msg         = system_msg
+
+        api_type = os.getenv("OPENAI_API_TYPE")
+        api_base = os.getenv("OPENAI_API_BASE") if api_type == "open_ai" else os.getenv("AZURE_OPENAI_ENDPOINT")
+        api_key = os.getenv("OPENAI_API_KEY") if api_type == "open_ai" else os.getenv("AZURE_OPENAI_API_KEY")
+
+        # setting embeddings
+        if (api_type == "open_ai"):
+            self.embeddings = OpenAIEmbeddings(
+                base_url = api_base,
+                api_key=api_key,
+                )
+        else:
+            self.embeddings = AzureOpenAIEmbeddings(
+                azure_deployment=os.getenv("OPENAI_API_MODEL_ADA"),
+                azure_endpoint=api_base,
+                )
+         
+        # LLM for condensed questions
+        api_model_gpt4 = os.getenv("OPENAI_API_MODEL_GPT4")
+
+        if (os.getenv("OPENAI_API_TYPE") == "open_ai"):
+            self.llm_condensed = ChatOpenAI(
+                temperature=0,
+                model_name=api_model_gpt4,
+                )
+        else:
+            self.llm_condensed = AzureChatOpenAI(
+                temperature=0,
+                deployment_name=api_model_gpt4,
+                )
+             
          
         # vector database connection
         if db_type == "local":
-            self.chroma_client = chromadb.PersistentClient(path=db_dir)
+            self.db_client = chromadb.PersistentClient(path=db_dir)
 
         if db_type == "qdrant":
-            self.qdrant_client =    QdrantClient(
+            self.db_client = QdrantClient(
                 url = os.getenv("QDRANT_URL"),
                 api_key=os.getenv("QDRANT_API_KEY"),
                 prefer_grpc=True,               
                 )  
             
         # SQL database connection
-        try:
-            self.conn_pool = pool.QueuePool(
-                creator = getconn,
-                max_overflow=10,
-                pool_size=5,
-                )
-            
-        except (Exception, psycopg2.DatabaseError) as error:
-            print("Error while connecting to PostgreSQL", error)
-            
+        self.db = KBADatabase()
+        
+        # setup logging for MultiQueryRetriever
+        if verbose:
+            logging.basicConfig()
+            logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
+        
+                
         self.history  = []   # chat history [("project":project, "user_id":user_id, "last_time":last_time, "history":[(question, answer),...]), ...]
-        self.projects = {}   # projects parameters dictionary {"project_name": 
-                             #   {"id_project":id_project, "system_msg":system_msg, "api_model":api_model, "answer_time":answer_time, "citation":citation},
-                             #     "self_doc_descr":self_doc_descr, "self_metadata: : self_metadata
-                             #   }
-                             #
+        self.projects = {} # projects parameters dictionary {"project_name": Project class }
+
+
+
         
     def set_cls_par(self,
-        db_type:str = "",
-        db_dir:str = "",
-        system_msg:str  = "",
+        db_type:      str = "",
+        db_dir:       str = "",
+        system_msg:   str  = "",
         k_history:    int  = None,
         time_limit_history: int = None,
         verbose:      bool = None,
@@ -204,8 +211,16 @@ class KBAQnA(object):
              self.history = history
 
         self.projects = projects
+        
+        self._set_retriever("") # setting all retrievers
 
-    def get_cls_par(self):
+        # writing to protocol
+        protocol = f"DB type = {db_type} DB dir = {db_dir} System message = {system_msg} K history = {k_history} Time limit history = {time_limit_history} Answer time = {answer_time}"
+        self.db.write_db_protocol(project = "",  protocol =protocol,  )
+
+
+
+    def get_cls_par(self) -> dict:
         '''
         Get class parameters.
         ----------------------------------------------------------------------------------------
@@ -238,6 +253,8 @@ class KBAQnA(object):
         citation:     bool = None,
         self_doc_descr: str = None,
         self_metadata:list = None,
+        metadata_parent_field:str = None,        
+        k:int = None,
         erase_history:bool = False,
         ):
         '''
@@ -251,17 +268,19 @@ class KBAQnA(object):
         api_model - model of the ChatGPT API. (if empty then environment variable "OPENAI_API_MODEL_GPT" is used)
             For open_ai: gpt-3.5-turbo, gpt-3.5-turbo-0613, gpt-3.5-turbo-16k, gpt-3.5-turbo-16k-0613
                          gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
-            For azure: deployment name
+            For azure: deployment name gpt4, gpr35
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time (if is None then is unchanged)
         citation - True - at the end of answer add web page references, False - without web page references (if is None then is unchanged)
         self_doc_descr - document description for Self Retriever
         self_metadata - metadata description list for Self Retriever (if isn't empty then is used Self Retriever)
+        metadata_parent_field - Metadata field for parent doc (if is None then is unchanged)
+        k - number of chunks retrieved from a vector database (if None then unchanged)
         erase_history - True - erase history self.history for the project, False - history isn't erased
         '''       
         
         self._get_project_par(project)
         
-        item = self.projects[project]
+        item2 = self.projects[project]
 
         # check correct model (only for OpenAi)
         if api_model != "":
@@ -269,40 +288,66 @@ class KBAQnA(object):
                 client = OpenAI()
                 if api_model in [item.id for item in client.models.list().data]:
                     item["api_model"] = api_model
+                    item2.api_model = api_model
                 else:
                     print(f"Error in set_project_par: Model '{api_model}' doesn't exist")
             else:
-                client = AzureOpenAI(
-                    api_key = os.getenv("OPENAI_API_KEY"),
-                    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT"),                    
-                    )
+                item2.api_model = api_model
 
         if system_msg != "":
-            item["system_msg"] = system_msg
+            item2.system_msg = system_msg
         
         if answer_time != None:
-            item["answer_time"] = answer_time
-  
+            item2.add_answer_time = answer_time
+            
         if citation != None:
-            item["citation"] = citation
+            item2.add_citation = citation
 
         if self_doc_descr != None:
-            item["self_doc_descr"] = self_doc_descr
+            item2.self_doc_descr = self_doc_descr
         
         if self_metadata != None:
-            item["self_metadata"] = self_metadata
+            item2.self_metadata = self_metadata
+
+        if metadata_parent_field != None:
+            item2.metadata_parent_field = metadata_parent_field
+            
+        if k != None:
+            item2.k = k
   
-        self.projects[project] = item
+        self.projects[project] = item2
+        
+        # setting llm in self.projects[project].llm
+        self.projects[project].set_llm()
+        
+        # set retriever
+        self.projects[project].set_retriever(
+            project = project,
+            verbose = self.verbose,                
+            )    
+
 
         if erase_history:
             for item in self.history.copy():
                 if item["project"] == project:
                     self.history.remove(item)             
 
+        # writing to protocol
+        api_model = item2.api_model
+        system_msg = item2.system_msg
+        answer_time = item2.add_answer_time
+        citation = item2.add_citation
+        protocol = f"Model = {api_model} System message = {system_msg} Answer time = {answer_time} Citation = {citation}"
+        self.db.write_db_protocol(
+            project = project,
+            protocol =protocol,  )
+
+
+
     def get_project_par(self,
         project:str = "",
                         
-    ):
+    ) -> dict:
         '''
         Get project parameters.
         ----------------------------------------------------------------------------------------
@@ -316,90 +361,116 @@ class KBAQnA(object):
             For azure: deployment name         
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time
         citation - True - at the end of answer add web page references, False - without web page references
+        self_doc_descr - document description for Self Retriever
+        self_metadata - metadata description list for Self Retriever        
+        metadata_parent_field - Metadata field for parent doc
+        k - number of chunks retrieved from a vector database
         '''       
         
         if project not in self.projects:
             return {}
 
         item = self.projects[project]
-        
+  
         return {
-            "system_msg":       item["system_msg"],
-            "api_model":        item["api_model"],
-            "answer_time":      item["answer_time"],
-            "citation":         item["citation"],
-            "self_doc_descr":   item["self_doc_descr"],
-            "self_metadata":    item["self_metadata"],
+            "system_msg":       item.system_msg,
+            "api_model":        item.api_model,
+            "answer_time":      item.add_answer_time,
+            "citation":         item.add_citation,
+            "self_doc_descr":   item.self_doc_descr,
+            "self_metadata":    item.self_metadata,
+            "metadata_parent_field" :   item.metadata_parent_field,
+            "k":                item.k,           
             }
 
+
+
+
+    def set_project_retriever(self,
+        project:str="",
+        retriever_weights:tuple  = (1, 0, 0, 0, 0),
+        ):
+        '''
+        Set project retriever weights.
+        ----------------------------------------------------------------------------------------
+        project - project name (is collection name in vector db). Is mandatory.
+        retriever_weights - weight vector of ensemble retriever. Weight are in interval <0, 1>
+        vector of (EmbeddingRetriever, SelfRetriever, BM25, MultiRetriever, SelfRetrieverParent)
+        '''       
+        
+        self._get_project_par(project)  # if projects par aren't setup then are initialized
+ 
+        self.projects[project].retriever_weights = retriever_weights
+         
+        self._set_retriever(project)    # setting retriever
+
+        # writing to protocol
+        protocol = f"EmbeddingRetriever = {retriever_weights[0]} SelfRetriever = {retriever_weights[1]} \
+        BM25 = {retriever_weights[2]} MultiRetriever = {retriever_weights[3]} SelfRetrieverParent = {retriever_weights[4]}"
+        self.db.write_db_protocol(
+            project = project,
+            protocol =protocol,  )
 
     
     def answer_question(self,
         question:str ="Co je Keymate?",
         user_id: str ="",        # user id
         project:str = "",
-        system_msg:str = "",
-        api_type:str = "",
-        api_base:str = "",
-        api_key:str = "",
-        api_version:str = "",
-        api_model:str="",
-     ):
+     ) -> str:
         """
         Answer a question 
         -------------------------------------------------------------------------
         question - question (is mandatory)
         user_id - unique user id (is mandatory)
         project - project name (is collection name in vector db). Is mandatory.
-        system_msg - partial text which will be added at the begin of the system message (can be empty)
-        api_type - OpenAI type - open_ai, azure (if empty then environment variable "OPENAI_API_TYPE" is used )
-        api_base - URL base of the ChatGPT API (if empty then environment variable "OPENAI_API_BASE" is used 
-        api_key - API key of the ChatGPT (if empty then environment variable "OPENAI_API_KEY" is used)
-        api_version - version of the ChatGPT API (if empty then environment variable "OPENAI_API_VERSION" is used)
-        api_model - model of the ChatGPT API. (if empty then environment variable "OPENAI_API_MODEL_GPT" is used)
-            For open_ai: gpt-3.5-turbo, gpt-3.5-turbo-0613, gpt-3.5-turbo-16k, gpt-3.5-turbo-16k-0613
-                         gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
-            For azure: deployment name 
  
         returns answer
         """
         st = time.time()
- 
-        history = self._get_history(project, user_id)   # get a last conversation history
         
         # getting project parameters
-        (id_project, pr_system_message, pr_api_model, pr_answer_time, citation, self_doc_descr, self_metadata) = self._get_project_par(project)
+        (pr_system_message, pr_api_model, pr_answer_time, citation, self_doc_descr, self_metadata) = self._get_project_par(project)
 
-        if system_msg == "":
-            system_msg = pr_system_message
+        # nove reseni RAG
+        condensed_question = self._get_condensed_question(project, user_id, question)
+        chain = self._get_qa_lcel (project, pr_system_message, pr_api_model, self_doc_descr, self_metadata, condensed_question)
 
-        if api_model == "":
-            api_model = pr_api_model
+        # https://python.langchain.com/docs/modules/model_io/llms/token_usage_tracking        
+        with get_openai_callback() as cb:
+            result_chain = chain.invoke(input = condensed_question)
+ 
+        # number chunks of the context
+        context_num = result_chain["documents"]
+ 
+        if context_num == 0:
+            answer = "Nevím"
+        else:
+            answer = result_chain["answer"]
 
-        qa = self._get_qa(project, system_msg, api_type, api_base, api_key, api_version, api_model, self_doc_descr, self_metadata)
-
-        try:
-            response = qa({"question": question, "chat_history": history})  # get answer
-            answer = response["answer"]
-        except Exception as e:
-            response = None
-            answer = self._filter_error(e)
-
+        
         self._add_history(project, user_id, question, answer)   # save question/answer to the conversation history
 
         et = time.time()
-        
+  
+
         # write question/answer to DB log
-        self._write_db_log(
+        if question == condensed_question:
+            condensed_question = None
+            
+        self.db.write_db_log(
             project = project,
             question = question,
+            condensed_question = condensed_question,
             answer=answer,
-            api_model = api_model,
+            api_model = pr_api_model,
             elapsed_time = et - st,
+            prompt_tokens = cb.prompt_tokens,
+            completion_tokens = cb.completion_tokens,
+            total_cost = cb.total_cost,            
         )
-
+          
         if citation:
-            answer += self._get_citation(response)
+            answer += self._get_citation_chain(result_chain)
 
 
         if pr_answer_time:
@@ -424,17 +495,11 @@ class KBAQnA(object):
         """
  
         # getting project parameters
-        (id_project, pr_system_message, pr_api_model, pr_answer_time, citation, self_doc_descr, self_metadata) = self._get_project_par(project)
+        (pr_system_message, pr_api_model, pr_answer_time, citation, self_doc_descr, self_metadata) = self._get_project_par(project)
 
-        system_msg = pr_system_message
-        api_type = ""
-        api_base = ""
-        api_key = ""
-        api_version = ""
-        api_model = pr_api_model
-
-        qa = self._get_qa(project, system_msg, api_type, api_base, api_key, api_version, api_model, self_doc_descr, self_metadata)
-
+        '''
+        qa = self._get_qa(project, pr_system_message, pr_api_model, self_doc_descr, self_metadata)
+        
         try:
             response = qa({"question": question, "chat_history": []})  # get answer
             answer = response["answer"]
@@ -442,9 +507,14 @@ class KBAQnA(object):
         except Exception as e:
             answer = self._filter_error(e)
             contexts = []
+        '''
         
-        # source is in doc.metadata["source"]
-            
+        # nove reseni RAG
+        chain = self._get_qa_lcel (project, pr_system_message, pr_api_model, self_doc_descr, self_metadata, question)
+        result_chain = chain.invoke(input = question)
+        answer = result_chain["answer"]
+        contexts = [doc.page_content for doc in result_chain["documents"]]
+
         return {'question': question, 'answer': answer, 'contexts': contexts}    
 
 
@@ -474,6 +544,8 @@ class KBAQnA(object):
         else:
             # update item
             history = self.history[index]["history"]
+
+        # print(f"Project: {project} Usere id: {user_id} History: \n{history}\n") 
 
         return history
 
@@ -513,123 +585,217 @@ class KBAQnA(object):
             item["history"].append((question, answer))
             item["history"] = item["history"][-self.k_history:]
             self.history[index] = item
-            
+      
 
-    def _get_qa(self,
+    def _get_qa_lcel(self,
         project:str = "",
         system_msg:str = "",
-        api_type:str = "",
-        api_base:str = "",
-        api_key:str = "",
-        api_version:str = "",
         api_model:str="",
         self_doc_descr:str="",
         self_metadata:list=[],
+        query:str="",
         
      ):
         """
-        Return qa object for Question/answer
+        Return LCEL qa object for Question/answer
         -------------------------------------------------------------------------
         project - project name (is collection name in vector db). Is mandatory.
         system_msg - partial text which will be added at the begin of the system message
-        api_type - OpenAI type - open_ai, azure (if empty then environment variable "OPENAI_API_TYPE" is used )
-        api_base - URL base of the ChatGPT API (if empty then environment variable "OPENAI_API_BASE" is used 
-        api_key - API key of the ChatGPT (if empty then environment variable "OPENAI_API_KEY" is used)
-        api_version - version of the ChatGPT API (if empty then environment variable "OPENAI_API_VERSION" is used)
         api_model - model of the ChatGPT API. (if empty then environment variable "OPENAI_API_MODEL_GPT" is used)
             For open_ai: gpt-3.5-turbo, gpt-3.5-turbo-0613, gpt-3.5-turbo-16k, gpt-3.5-turbo-16k-0613
                          gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
             For azure: deployment name 
+        query - query only for get context for verbose == True
 
         returns answer
         """
- 
-        if api_type == "":
-            api_type = os.getenv("OPENAI_API_TYPE")
-            
-        if api_base == "":
-            api_base = os.getenv("OPENAI_API_BASE") if api_type == "open_ai" else os.getenv("AZURE_OPENAI_ENDPOINT")
-            
-        if api_key == "":
-            api_key = os.getenv("OPENAI_API_KEY") if api_type == "open_ai" else os.getenv("AZURE_OPENAI_API_KEY")
- 
-        if api_version == "":
-            api_version = os.getenv("OPENAI_API_VERSION")
 
-        # model definition for get question
-        if (api_type == "open_ai"):
-            embeddings = OpenAIEmbeddings(
-                api_base = api_base,
-                openai_api_key=api_key,
-                api_version=api_version,
-                )
-            
-            llm = ChatOpenAI(
-                temperature=0,
-                model_name=api_model,
-                )
+        def format_docs(docs):
+            return "\n\n".join(doc.page_content for doc in docs)
+     
+        # Retrieval-augmented generation (RAG)
+        # https://python.langchain.com/docs/use_cases/question_answering/
+        if system_msg == "":
+            general_system_template = """Jsi AI asistent a odpovídáš pouze na základě Vědomostí dodaných uživatelem. \
+Pokud není na základě uvedených vědomostí možné jednoznačně odpovědět na otázku, odpověz "Nevím".
+
+Příklad, pokud informace není obsažena ve vědomostech:
+Uživatel: kde najdu vysokou školu v Lounech
+Asistent: Nevím"""
         else:
-            embeddings = AzureOpenAIEmbeddings(
-                azure_deployment=os.getenv("OPENAI_API_MODEL_ADA"),
-                azure_endpoint=api_base,
-                openai_api_version=api_version,
-                )
-            
-            llm = AzureChatOpenAI(
-                temperature=0,
-                deployment_name=api_model,
-                )
+            general_system_template = system_msg
 
-        if self.db_type == "local":
-            vectorstore = Chroma(client = self.chroma_client, collection_name = project, embedding_function=embeddings)
+        general_user_template = """Tvoje vědomosti:
 
-        if self.db_type == "qdrant":
-            vectorstore = Qdrant(client = self.qdrant_client, collection_name = project, embeddings=embeddings)
-
-  
-        # Initialise Langchain - Conversation Retrieval Chain 2
-        # https://stackoverflow.com/questions/76240871/how-do-i-add-memory-to-retrievalqa-from-chain-type-or-how-do-i-add-a-custom-pr
-        general_system_template = r""" 
-Use the following pieces of context to answer the users question.
-If you don't know the answer, just say that you don't know, don't try to make up an answer.
-----------------
 {context}
-        """
 
-        if system_msg != "":
-            general_system_template = system_msg + general_system_template
+#####
+Otázka: {question} 
+Odpovídej na základě výše uvedených vědomostí. \
+Pokud nelze na základě vědomostí jednoznačně odpovědět, tvoje odpověď bude pouze "Nevím"."""
 
-        general_user_template = "{question}"
         messages = [
                     SystemMessagePromptTemplate.from_template(general_system_template),
                     HumanMessagePromptTemplate.from_template(general_user_template)
         ]
         qa_prompt = ChatPromptTemplate.from_messages( messages )
+
+        llm = self.projects[project].llm
+
+        retriever = self._get_retriever( project=project )
         
-        if len(self_metadata) == 0:
-            retriever = vectorstore.as_retriever(search_kwargs={'k': self.k})      # standard vector DB retriever
+        if self.verbose:
+          
+            # print SelfQueryRetriever condition
+            self_condition = self.projects[project].get_self_condition(query)
+            if self_condition != None:
+                print(f"*** Self condition: {query}\n{self_condition}\n")               
+
+            # print context
+            docs = retriever.get_relevant_documents(query)
+            context = "\n\n".join([str(doc) for doc in docs])
+            print(f"*** Context:\n\n{context}\n")
+
+        rag_chain_from_docs = (
+            {
+                "context": lambda input: format_docs(input["documents"]),
+                "question": itemgetter("question"),
+            }
+            | qa_prompt
+            | llm
+            | StrOutputParser()
+        )
+        
+        rag_chain_with_source = RunnableParallel(
+            {"documents": retriever, "question": RunnablePassthrough()}
+        ) | {
+            "documents": lambda input: [doc.metadata for doc in input["documents"]],
+            "answer": rag_chain_from_docs,
+        }
+
+        return rag_chain_with_source
+
+
+    def _get_condensed_question(self,
+        project:str = "",
+        user_id:str="",
+        question:str="",
+     ) -> str:
+        """
+        Return condensed question from conversation history and actual question
+        -------------------------------------------------------------------------
+        project - project name (is collection name in vector db). Is mandatory.
+        system_msg - partial text which will be added at the begin of the system message
+        user_id - user id
+        question - actual question
+            
+        returns condensed question
+        """
+
+        history = self._get_history(project, user_id)   # get a last conversation history
+        
+        # when history is empty then question can't be condensed
+        if len(history) == 0:
+            return question
+        
+        chat_history = []
+        for query, answer in history:
+            chat_history.append(HumanMessage(content=query))
+            chat_history.append(AIMessage(content=answer))
+
+        condense_q_system_prompt = """S ohledem na historii konverzace a nejnovější uživatelskou otázku, která by mohla odkazovat na historii konverzace, \
+formulujte samostatnou otázku, které lze porozumět i bez historie konverzace. \
+NEODPOVÍDEJTE na otázku, pouze ji v případě potřeby přeformulujte a jinak ji vraťte tak, jak je."""
+
+        '''
+        condense_q_system_prompt = """Given a chat history and the latest user question \
+which might reference the chat history, formulate a standalone question \
+which can be understood without the chat history. Do NOT answer the question, \
+just reformulate it if needed and otherwise return it as is."""
+        '''
+        condense_q_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", condense_q_system_prompt),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("human", "{question}"),
+            ]
+        )
+        
+        condense_q_chain = condense_q_prompt | self.llm_condensed | StrOutputParser()
+
+        condensed_question = condense_q_chain.invoke(
+            {
+                "chat_history": chat_history,
+                "question": question,
+            }
+        )
+
+        return condensed_question
+
+
+    def _set_retriever(self,
+        project:str,
+        ):
+        """
+        Set project's langchain retrievers
+        -------------------------------------------------------------------------
+        project - project name (is collection name in vector db). If is empty then set all retrievers
+        """
+        
+        if project != "":
+            project_list = [project]
         else:
-            retriever = SelfQueryRetriever.from_llm(    # vector DB retriever with filter on a DB metadata
-                llm = llm,
-                vectorstore = vectorstore,
-                document_contents = self_doc_descr,
-                metadata_field_info = self_metadata,
-                verbose=self.verbose,
+            project_list = self.projects.keys()
+
+
+        for project in project_list:
+            # setting llm
+            if self.projects[project].llm == None:
+                self.projects[project].set_llm()
+
+            # setting vectorstore
+            if self.projects[project].vectorstore == None:
+                self.projects[project].set_vectorstore(
+                    project = project,
+                    db_type = self.db_type,
+                    db_client = self.db_client,
+                    embeddings = self.embeddings,
+                    )
+
+            # setting retrievers
+            self.projects[project].set_retriever(
+                project = project,
+                verbose = self.verbose,             
                 )
 
 
-        return ConversationalRetrievalChain.from_llm(
-            llm = llm,
-            retriever = retriever,
-            verbose=self.verbose,
-            combine_docs_chain_kwargs={'prompt': qa_prompt},
-            return_source_documents=self.projects[project]["citation"], 
-        )
-            
-
-    def _get_citation(self,
-        response    
+    def _get_retriever(self,
+        project:str,
         ):
+        """
+        Return langchain retriever.
+        -------------------------------------------------------------------------
+        project - project name (is collection name in vector db). Is mandatory.
+
+        returns retriever
+        """
+
+        retriever = self.projects[project].retriever_ensemble
+        if retriever != None:
+            return retriever
+
+        for retriever, weight in zip(self.projects[project].retriever_set, self.projects[project].retriever_weights):
+            if retriever != None and weight > 0:
+                return retriever
+
+        return None
+
+
+   
+    
+    def _get_citation_chain(self,
+        response    
+        ) -> str:
         """
         Return reference list to web pages.
         For example
@@ -649,8 +815,8 @@ If you don't know the answer, just say that you don't know, don't try to make up
         reference_list = [] 
         
         # select web references with order
-        for item in response["source_documents"]:
-            ref = item.metadata["source"]
+        for item in response["documents"]:
+            ref = item["source"]
             if ref.startswith("https:") and ref not in reference_list:
                 reference_list.append(ref)
 
@@ -667,104 +833,54 @@ If you don't know the answer, just say that you don't know, don't try to make up
 
         return citation_text
 
+
+
     def _get_project_par(self,
         project:str = "",
-    ):
+    )->tuple:
         """
-        Return base parameters of the project (system_msg, api_model, answer_time) from self.projects[].
+        Return base parameters of the project from self.projects[].
         If self.projects[] not exists then setup it from environment variables
         -------------------------------------------------------------------------
         project - project name. Is mandatory.
 
-        returns (system_msg, api_model, answer_time, citation, self_doc_descr, self_metadata)
+        returns (system_msg, api_model, add_answer_time, add_citation, self_doc_descr, self_metadata)
         """
- 
         if project not in self.projects:
-            self.projects[project] = {"id_project":None,
-                                      "system_msg":self.system_msg,
-                                      "api_model":os.getenv("OPENAI_API_MODEL_GPT"),
-                                      "answer_time":self.answer_time,
-                                      "citation":False,
-                                      "self_doc_descr":"",
-                                      "self_metadata":[],
-                                      }
+            item = Project(
+                system_msg = self.system_msg,
+                api_model = os.getenv("OPENAI_API_MODEL_GPT"),
+                add_answer_time = self.answer_time,
+                add_citation = False,
+                self_doc_descr = "",
+                self_metadata = [],
+                metadata_parent_field = "",
+                )            
+
+            self.projects[project] = item
+ 
+            self.projects[project].set_llm()
             
+            self.projects[project].set_vectorstore(
+                project = project,
+                db_type = self.db_type,
+                db_client = self.db_client,
+                embeddings = self.embeddings,
+            )
+            
+            self.projects[project].set_retriever(
+                project = project,
+                verbose = self.verbose,     
+            )
+ 
         item = self.projects[project]
         
-        return (item["id_project"], item["system_msg"], item["api_model"], item["answer_time"], item["citation"], item["self_doc_descr"], item["self_metadata"])
+        return (item.system_msg, item.api_model, item.add_answer_time, item.add_citation, item.self_doc_descr, item.self_metadata)
     
-
-    def _write_db_log(self,
-        project:str = "",
-        question:str = "",
-        answer:str="",
-        api_model:str="",
-        elapsed_time:float = 0,
-    ):
-        """
-        Write log information question/answer to SQL db
-        -------------------------------------------------------------------------
-        project - project name. Is mandatory.
-        question - question
-        answer - answer
-        api_model - model of the ChatGPT API. (if empty then environment variable "OPENAI_API_MODEL_GPT" is used)
-            For open_ai: gpt-3.5-turbo, gpt-3.5-turbo-0613, gpt-3.5-turbo-16k, gpt-3.5-turbo-16k-0613
-                         gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
-            For azure: deployment name         
-        elapsed_time - elapsed time in seconds
-        """ 
-        if not self.conn_pool:
-            return
-
-        # getting project id
-        id_project = self.projects[project]["id_project"]
-            
-        # if projects id isn't retrieved then read from DB
-        if id_project == None:
-            try:
-                conn = self.conn_pool.connect()
-            except Exception as e:
-                print(f"Database SQL exception: {e}")
-                return
-
-
-            cur = conn.cursor()
-            cur.execute('select "ID_PROJECT" from public."PROJECTS" where "PROJECT" = %s;', (project,))
-            rows = cur.fetchone()
-            cur.close()
-            conn.close()
-            
-            if type(rows) == tuple:
-                if len(rows) > 0:
-                    id_project = rows[0]
-                    self.projects[project]["id_project"] = id_project
-  
-        if id_project == None:
-            return
-
-        # insert log to PROJECTS_LOG
-        try:
-            conn = self.conn_pool.connect()
-        except Exception as e:
-            print(f"Database SQL exception: {e}")
-            return
-
-        cur = conn.cursor()
-    
-        sql = """
-            INSERT INTO public."PROJECTS_LOG" ("ID_PROJECT", "QUESTION", "ANSWER", "CHATGPT_MODEL", "ELAPSED_TIME")
-            VALUES (%s, %s, %s, %s, %s);
-            """
-        cur.execute(sql,
-            (id_project, question, answer, api_model, elapsed_time,)
-            )
-        cur.close()
-        conn.commit()
-        conn.close()
-
+     
     def _filter_error(self,
         error,
-    ):
+    ) -> str:
         """
         Create response from GPT filter
         -------------------------------------------------------------------------
@@ -797,3 +913,39 @@ If you don't know the answer, just say that you don't know, don't try to make up
         bad_content = bad_content.rstrip()[:-1]
 
         return f"Vámi zadaný dotaz/výzva má závadný obsah: {bad_content}. Změňte prosím formulaci."
+
+    def get_list_from_metadata(self,
+        project:str = "",
+        metadata_field = None,               
+        ) -> list[str]:
+        '''
+        Get list values from field in self.documents.metadata
+        Args:
+            project - project name (collection name in Qdrant database)
+            metadata_field: field name in metadata
+        '''
+
+        result = self.db_client.scroll(
+            collection_name=project,
+            limit=50000,
+            with_payload=True,
+            with_vectors=False,
+        )
+            
+        records = result[0]
+            
+        metadatas = [item.payload["metadata"] for item in records]
+
+        value_set = set()
+
+        for metadata in metadatas:
+            if metadata_field not in metadata:
+                continue
+            
+            value = metadata[metadata_field].strip()
+            if value == "":
+                continue
+
+            value_set.add(value)
+
+        return [value for value in value_set]

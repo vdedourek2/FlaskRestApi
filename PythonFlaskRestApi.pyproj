@@ -30,6 +30,10 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="app.py" />
+    <Compile Include="Processing\db_mod.py" />
+    <Compile Include="Processing\parent_retriever_mod.py" />
+    <Compile Include="Processing\project_mod.py" />
+    <Compile Include="Processing\qdrant_bm25_mod.py" />
     <Compile Include="Processing\qna_lch_mod.py" />
   </ItemGroup>
   <ItemGroup>

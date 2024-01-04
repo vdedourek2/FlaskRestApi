@@ -21,6 +21,7 @@ def default_preprocessing_func(text: str) -> List[str]:
     return text.split()
 
 
+
 # constants
 PREPOSITION_SET = {"v", "na", "s", "z", "o", "do", "pro", "k", "za", "po", "při", "od", "podle", "u", "před", 
                     "mezi", "ke", "bez", "proti", "přes", "nad", "ve", "se", }       

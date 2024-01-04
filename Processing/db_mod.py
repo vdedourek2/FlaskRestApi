@@ -24,7 +24,6 @@ def getconn():
         dbname=os.getenv("SQLDB_DATABASE"))
 
 
-
 class KBADatabase(object):
     '''
     ### Class for comunication with PostgeSQL database needed for KBA

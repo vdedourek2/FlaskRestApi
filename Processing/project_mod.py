@@ -25,6 +25,7 @@ from langchain.vectorstores import Chroma, Qdrant
 from Processing.db_mod import KBADatabase
 from Processing.parent_retriever_mod import QdrantParentRetriever
 
+
 @dataclass
 class Project:
     """Class for properties of chatbot project for Knowledge Base Assistant."""

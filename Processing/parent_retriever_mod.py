@@ -33,7 +33,7 @@ class QdrantParentRetriever(BaseRetriever):
 
         arbitrary_types_allowed = True
    
-    
+        
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
     ) -> List[Document]:

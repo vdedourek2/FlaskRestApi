@@ -70,6 +70,7 @@ Run ```pip install -U langchain``` to install ```langchain```
 6. Add solution to source Control (GitHub. Repository = PythonApplication)  
 7. To access your bot on localhost, go to ```http://127.0.0.1:5000/ ``` 
 
+From requirements.txt remove pywin32==306 before installation in cloude (Azure).
 
 ## GitHub SetUp
 Repository PythonApplication is created from VisualStudio.
@@ -98,12 +99,24 @@ QDRANT_API_KEY=
 
 FLASK_SECRET_KEY=
 
-OPENAI_API_TYPE=azure  
-OPENAI_API_BASE=  
-OPENAI_API_VERSION=  
-OPENAI_API_KEY=  
+OPENAI_API_TYPE=azure
+AZURE_OPENAI_ENDPOINT=
+AZURE_OPENAI_API_KEY= 
+OPENAI_API_MODEL_ADA=ada
+OPENAI_API_MODEL_GPT=gpt35	# gpt35, gpt4, gpt35_1106
+OPENAI_API_MODEL_GPT4=gpt4
+OPENAI_API_MODEL_GPT35=gpt35_1106
+OPENAI_API_VERSION=2023-10-01-preview  
 
-PYTHON_VERSION=3.11.2  
+FLASK_ADMIN_API_KEY=
+FLASK_APP_API_KEY=
+
+SQLDB_HOST=srvchatbotdb.postgres.database.azure.com
+SQLDB_DATABASE=chatbot_projects
+SQLDB_UID=
+SQLDB_PWD= 
+
+PYTHON_VERSION=3.11.2 
 
 ![File](file.png)
 

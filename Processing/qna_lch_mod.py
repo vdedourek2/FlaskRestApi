@@ -2,8 +2,6 @@
 #-------------------------------------------------------------
 # Challenges:
 # - attack protection
-# - price meassuring
-
 
 ''' 
 KBAQnA - Class for talking with Knowledge Base Assistent on Vectore database data
@@ -215,7 +213,7 @@ class KBAQnA(object):
         self._set_retriever("") # setting all retrievers
 
         # writing to protocol
-        protocol = f"DB type = {db_type} DB dir = {db_dir} System message = {system_msg} K history = {k_history} Time limit history = {time_limit_history} Answer time = {answer_time}"
+        protocol = f"cls_par: DB type = {db_type}, DB dir = {db_dir}, System message = {system_msg}, K history = {k_history}, Time limit history = {time_limit_history}, Answer time = {answer_time}"
         self.db.write_db_protocol(project = "",  protocol =protocol,  )
 
 
@@ -337,7 +335,7 @@ class KBAQnA(object):
         system_msg = item2.system_msg
         answer_time = item2.add_answer_time
         citation = item2.add_citation
-        protocol = f"Model = {api_model} System message = {system_msg} Answer time = {answer_time} Citation = {citation}"
+        protocol = f"proj_par: Model = {api_model}, System message = {system_msg}, Answer time = {answer_time}, Citation = {citation}"
         self.db.write_db_protocol(
             project = project,
             protocol =protocol,  )
@@ -391,7 +389,7 @@ class KBAQnA(object):
         retriever_weights:tuple  = (1, 0, 0, 0, 0),
         ):
         '''
-        Set project retriever weights.
+        Set ensemble project retriever weights.
         ----------------------------------------------------------------------------------------
         project - project name (is collection name in vector db). Is mandatory.
         retriever_weights - weight vector of ensemble retriever. Weight are in interval <0, 1>
@@ -405,11 +403,15 @@ class KBAQnA(object):
         self._set_retriever(project)    # setting retriever
 
         # writing to protocol
-        protocol = f"EmbeddingRetriever = {retriever_weights[0]} SelfRetriever = {retriever_weights[1]} \
-        BM25 = {retriever_weights[2]} MultiRetriever = {retriever_weights[3]} SelfRetrieverParent = {retriever_weights[4]}"
+        protocol = f"weights_par: EmbeddingRetriever = {retriever_weights[0]}, SelfRetriever = {retriever_weights[1]}, \
+BM25 = {retriever_weights[2]}, MultiRetriever = {retriever_weights[3]}, SelfRetrieverParent = {retriever_weights[4]}"
         self.db.write_db_protocol(
             project = project,
             protocol =protocol,  )
+        
+
+
+
 
     
     def answer_question(self,
@@ -459,6 +461,7 @@ class KBAQnA(object):
             
         self.db.write_db_log(
             project = project,
+            user_id = user_id,
             question = question,
             condensed_question = condensed_question,
             answer=answer,
@@ -616,16 +619,16 @@ class KBAQnA(object):
         # Retrieval-augmented generation (RAG)
         # https://python.langchain.com/docs/use_cases/question_answering/
         if system_msg == "":
-            general_system_template = """Jsi AI asistent a odpovídáš pouze na základě Vědomostí dodaných uživatelem. \
+            GENERAL_SYSTEM_TEMPLATE = """Jsi AI asistent a odpovídáš pouze na základě Vědomostí dodaných uživatelem. \
 Pokud není na základě uvedených vědomostí možné jednoznačně odpovědět na otázku, odpověz "Nevím".
 
 Příklad, pokud informace není obsažena ve vědomostech:
 Uživatel: kde najdu vysokou školu v Lounech
 Asistent: Nevím"""
         else:
-            general_system_template = system_msg
+            GENERAL_SYSTEM_TEMPLATE = system_msg
 
-        general_user_template = """Tvoje vědomosti:
+        GENERAL_USER_TEMPLATE = """Tvoje vědomosti:
 
 {context}
 
@@ -635,8 +638,8 @@ Odpovídej na základě výše uvedených vědomostí. \
 Pokud nelze na základě vědomostí jednoznačně odpovědět, tvoje odpověď bude pouze "Nevím"."""
 
         messages = [
-                    SystemMessagePromptTemplate.from_template(general_system_template),
-                    HumanMessagePromptTemplate.from_template(general_user_template)
+                    SystemMessagePromptTemplate.from_template(GENERAL_SYSTEM_TEMPLATE),
+                    HumanMessagePromptTemplate.from_template(GENERAL_USER_TEMPLATE)
         ]
         qa_prompt = ChatPromptTemplate.from_messages( messages )
 
@@ -703,19 +706,19 @@ Pokud nelze na základě vědomostí jednoznačně odpovědět, tvoje odpověď 
             chat_history.append(HumanMessage(content=query))
             chat_history.append(AIMessage(content=answer))
 
-        condense_q_system_prompt = """S ohledem na historii konverzace a nejnovější uživatelskou otázku, která by mohla odkazovat na historii konverzace, \
+        CONDENSE_Q_SYSTEM_PROMPT = """S ohledem na historii konverzace a nejnovější uživatelskou otázku, která by mohla odkazovat na historii konverzace, \
 formulujte samostatnou otázku, které lze porozumět i bez historie konverzace. \
 NEODPOVÍDEJTE na otázku, pouze ji v případě potřeby přeformulujte a jinak ji vraťte tak, jak je."""
 
         '''
-        condense_q_system_prompt = """Given a chat history and the latest user question \
+        CONDENSE_Q_SYSTEM_PROMPT = """Given a chat history and the latest user question \
 which might reference the chat history, formulate a standalone question \
 which can be understood without the chat history. Do NOT answer the question, \
 just reformulate it if needed and otherwise return it as is."""
         '''
         condense_q_prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", condense_q_system_prompt),
+                ("system", CONDENSE_Q_SYSTEM_PROMPT),
                 MessagesPlaceholder(variable_name="chat_history"),
                 ("human", "{question}"),
             ]

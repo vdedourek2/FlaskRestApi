@@ -42,7 +42,7 @@ class Project:
     vectorstore:any = None  # vectorstore Qdrant, Chromadb
     
     # weight vector of ensemble retriever. Weight are in interval <0, 1>
-    # vector of (embedding retriever, SelfQueryRetriever, BM25, MultiQueryRetriever, ParentSelfQueryRetriever)
+    # vector of (embedding retriever, SelfQueryRetriever, BM25, MultiQueryRetriever, ParentRetriever + SelfQueryRetriever)
     retriever_weights:tuple = (1, 0, 0, 0, 0)             # vector of initialized weights
     retriever_set:tuple = (None, None, None, None, None)  # vector of initialized retrievers 
     retriever_ensemble:any = None   # ensemble retriever (only if exists {weight : 0 < weight < 1} )

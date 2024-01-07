@@ -24,6 +24,7 @@ def getconn():
         dbname=os.getenv("SQLDB_DATABASE"))
 
 
+
 class KBADatabase(object):
     '''
     ### Class for comunication with PostgeSQL database needed for KBA
@@ -54,7 +55,6 @@ class KBADatabase(object):
             
     def write_db_log(self,
         project:str = "",
-        id_project:int = None,
         user_id: str ="",        # user id
         question:str = "",
         condensed_question:str = None,
@@ -88,11 +88,9 @@ class KBADatabase(object):
         if id_project == None:
             return
         
-        sql = """
-            INSERT INTO public."PROJECTS_USER_HISTORY" ("ID_PROJECT", "QUESTION", "CONDENSED_QUESTION", "ANSWER", "ID_USER", "ELAPSED_TIME",
-                                    "PROMPT_TOKENS", "COMPLETION_TOKENS", "TOTAL_COST")
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """
+        sql = """INSERT INTO public."PROJECTS_USER_HISTORY" ("ID_PROJECT", "QUESTION", "CONDENSED_QUESTION", "ANSWER", "ID_USER", "ELAPSED_TIME",
+"PROMPT_TOKENS", "COMPLETION_TOKENS", "TOTAL_COST")
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);"""
             
         data = (id_project, question, condensed_question, answer, user_id, elapsed_time, prompt_tokens, completion_tokens, total_cost)
         self._write_db(sql, data)
@@ -115,10 +113,8 @@ class KBADatabase(object):
         else:
             id_project = self.get_project_id(project)
 
-        sql = """
-            INSERT INTO public."PROJECTS_PROTOCOL" ("ID_PROJECT", "PROTOCOL")
-            VALUES (%s, %s);
-            """        
+        sql = """INSERT INTO public."PROJECTS_PROTOCOL" ("ID_PROJECT", "PROTOCOL")
+VALUES (%s, %s);"""        
          
         data = (id_project, protocol)
         self._write_db(sql, data)            
@@ -140,18 +136,14 @@ class KBADatabase(object):
         id_project = self.get_project_id(project)
  
         # deleting original data
-        sql = """
-            DELETE FROM public."PROJECTS_RETRIEVER"
-            WHERE "ID_PROJECT" = %s and "RETRIEVER_NAME" = %s;
-            """
+        sql = """DELETE FROM public."PROJECTS_RETRIEVER"
+WHERE "ID_PROJECT" = %s and "RETRIEVER_NAME" = %s;"""
         data = (id_project, retriever_name,)
         self._write_db(sql, data)
 
         # insert new data
-        sql = """
-            INSERT INTO public."PROJECTS_RETRIEVER" ("ID_PROJECT", "RETRIEVER_NAME", "RETRIEVER_DATA")
-            VALUES (%s, %s, %s);
-            """
+        sql = """INSERT INTO public."PROJECTS_RETRIEVER" ("ID_PROJECT", "RETRIEVER_NAME", "RETRIEVER_DATA")
+VALUES (%s, %s, %s);"""
         data = (id_project, retriever_name, retriever_data)
         self._write_db(sql, data)
         
@@ -211,21 +203,21 @@ class KBADatabase(object):
         if not self.conn_pool:
             return
    
-        # connection to DB
         try:
+            # connection to DB
             conn = self.conn_pool.connect()
+
+            cur = conn.cursor()
+    
+            # executing SQL
+            cur.execute(sql, data)
+
+            cur.close()
+            conn.commit()
+            conn.close()
         except Exception as e:
             print(f"Database SQL exception: {e}")
             return
-
-        cur = conn.cursor()
-    
-        # executing SQL
-        cur.execute(sql, data)
-
-        cur.close()
-        conn.commit()
-        conn.close()
 
     def _read_value(self,
         sql:str, 
@@ -242,18 +234,18 @@ class KBADatabase(object):
         if not self.conn_pool:
             return value
    
-        # connection to DB
         try:
+        # connection to DB
             conn = self.conn_pool.connect()
+
+            cur = conn.cursor()
+            cur.execute(sql, data)
+            rows = cur.fetchone()
+            cur.close()
+            conn.close()
         except Exception as e:
             print(f"Database SQL exception: {e}")
             return value
-
-        cur = conn.cursor()
-        cur.execute(sql, data)
-        rows = cur.fetchone()
-        cur.close()
-        conn.close()
             
         if type(rows) == tuple:
             if len(rows) > 0:

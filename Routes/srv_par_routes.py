@@ -1,11 +1,15 @@
+# Best practices
+# https://medium.com/@nadinCodeHat/rest-api-naming-conventions-and-best-practices-1c4e781eb6a5
+
 from flask import Blueprint, request, jsonify
 from init import qa, auth  # Import initialized components from init.py
+from datetime import datetime
 
 srv_par_blueprint = Blueprint("srv_par", __name__)
 
 
 """
-/get_srv_par - Get server parameters
+/api/v1/server - Get server parameters
         GET method.
 
    Output:
@@ -30,7 +34,7 @@ srv_par_blueprint = Blueprint("srv_par", __name__)
         verbose - True - logging process question/answer to system output, False - without logging
         answer_time - True - the answer contains the time spent in seconds,  False - answer is without spent time  
 """        
-@srv_par_blueprint.route('/get_srv_par', methods=['GET'])
+@srv_par_blueprint.route('/api/v1/server', methods=['GET'])
 @auth.login_required
 def process_get_srv_par():
     try:
@@ -41,7 +45,7 @@ def process_get_srv_par():
 
 
 """
-/set_srv_par - Set server parameters
+/api/v1/server - Set server parameters
         POST method.
        {
             ["db_type":              db_type,]
@@ -69,7 +73,7 @@ def process_get_srv_par():
         erase_history - True - question/answer history will be erased, False - question/answer history will not be erased
         Default False.
 """        
-@srv_par_blueprint.route('/set_srv_par', methods=['POST'])
+@srv_par_blueprint.route('/api/v1/server', methods=['POST'])
 @auth.login_required
 def process_set_srv_par():
     if auth.current_user() != "admin":
@@ -104,7 +108,50 @@ def process_set_srv_par():
             erase_history = erase_history,
             )
 
-        return jsonify({}), 200
+        return jsonify(qa.get_cls_par()), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+"""
+/api/v1/projects - Get server projects
+        GET method.
+
+   Output:
+        [project1, project2, ...] 
+"""        
+@srv_par_blueprint.route('/api/v1/projects', methods=['GET'])
+@auth.login_required
+def process_get_projects():
+    try:
+        return jsonify(qa.get_projects()), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+"""
+/api/v1/users - Get user's history on projects
+        GET method.
+
+   Output:
+        [("project":project, "user_id":user_id, "last_time":last_time, "history":[(question, answer),...]), ...]
+"""        
+@srv_par_blueprint.route('/api/v1/users', methods=['GET'])
+@auth.login_required
+def process_get_users():
+    try:
+        history = qa.get_users()
+        
+        # transform ("last_time":last_time) to JSON format
+        for record in history:
+            if "last_time" in record:
+                # Convert the timestamp to a datetime object
+                datetime_object = datetime.fromtimestamp(record["last_time"])
+
+                # Convert the datetime object to a string in a specific format
+                record["last_time"] = datetime_object.strftime("%Y-%m-%d %H:%M:%S")  
+
+        return jsonify(history), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

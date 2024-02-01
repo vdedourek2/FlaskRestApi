@@ -1,8 +1,3 @@
-# Requests:
-#-------------------------------------------------------------
-# Challenges:
-# - attack protection
-
 ''' 
 KBAQnA - Class for talking with Knowledge Base Assistent on Vectore database data
         which are created by KBAIndex class (based on Langchain)
@@ -14,34 +9,47 @@ https://betterprogramming.pub/build-a-chatbot-for-your-notion-documents-using-la
 Library instalation:
 pip install load-dotenv       # environment variable service
 pip install langchain         # framework for LLM
+pip install langchain-openai  # framework for openai functions
 pip install openai            # OpenAI
 pip install chromadb          # Chromadb database API
 pip install qdrant-client     # Qdrant database API
+pip install pgvector          # pgvector extension for PostgreSQL
 pip install lark              # Needed for SelfQuerying
+pip install funcy             # funcy library
 '''
 
 from dotenv import load_dotenv      # python-dotenv
 import os
 import time
 import ast
-import pickle
+# import pickle
 import logging
+from dataclasses import replace
+from funcy import print_durations, project
 from openai import OpenAI, AzureOpenAI
 from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.embeddings import AzureOpenAIEmbeddings
-from langchain.callbacks import get_openai_callback
-from langchain.chat_models import ChatOpenAI, AzureChatOpenAI
+from langchain_openai import AzureOpenAIEmbeddings
+from langchain_community.callbacks import get_openai_callback
+from langchain_openai import ChatOpenAI, AzureChatOpenAI
+
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain.chains.query_constructor.base import StructuredQueryOutputParser, get_query_constructor_prompt
 from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate, MessagesPlaceholder
+from langchain.prompts import PromptTemplate
+from langchain_community.callbacks.openai_info import OpenAICallbackHandler
+from langchain_core.pydantic_v1 import BaseModel, Field
+# from langchain.output_parsers.openai_functions import JsonKeyOutputFunctionsParser
+# from langchain_community.utils.openai_functions import (
+#     convert_pydantic_to_openai_function,
+# )
 
 from operator import itemgetter
 from qdrant_client import QdrantClient
 import chromadb
 from Processing.db_mod import KBADatabase
 from Processing.project_mod import Project
+from Processing.pgvector_client_mod import PgvectorClient
 
 class KBAQnA(object):
     '''
@@ -51,6 +59,7 @@ class KBAQnA(object):
     db_type - Select option: 
         local - local Chroma DB in db directory, 
         qdrant - Qdrant database. Needs environment variables: QDRANT_URL, QDRANT_API_KEY
+        pgvector - pgvector extension in PostgreSQL. Needs environment variables: SQLDB_HOST, SQLDB_DATABASE, SQLDB_UID, SQLDB_PWD        
     db_dir - directory, where is saved local Chroma db (only for db = local)
     
     system_msg - partial text which will be added at the begin of the Chat GPT system message (short chatbot description)
@@ -123,7 +132,10 @@ class KBAQnA(object):
                 url = os.getenv("QDRANT_URL"),
                 api_key=os.getenv("QDRANT_API_KEY"),
                 prefer_grpc=True,               
-                )  
+                ) 
+            
+        if db_type == "pgvector":
+            self.db_client = PgvectorClient()
             
         # SQL database connection
         self.db = KBADatabase()
@@ -134,8 +146,7 @@ class KBAQnA(object):
             logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
         
                 
-        self.history  = []   # chat history [("project":project, "user_id":user_id, "last_time":last_time, "history":[(question, answer),...]), ...]
-        self.projects = {} # projects parameters dictionary {"project_name": Project class }
+        self.projects = {}  # projects parameters dictionary {"project_name": Project class }
 
 
 
@@ -170,8 +181,6 @@ class KBAQnA(object):
         Others:
         erase_history - True - question/answer history will be erased, False - question/answer history will not be erased 
         '''       
-        
-        history = self.history
         projects = self.projects
         
         if db_type == "":
@@ -205,10 +214,11 @@ class KBAQnA(object):
             answer_time = answer_time,           
             )
         
-        if not erase_history:
-             self.history = history
-
         self.projects = projects
+        
+        if erase_history: 
+            for item in self.projects:
+                item.memory.clear_history()
         
         self._set_retriever("") # setting all retrievers
 
@@ -249,10 +259,14 @@ class KBAQnA(object):
         api_model:str = "",
         answer_time:  bool = None,
         citation:     bool = None,
+        citation_field:str = None,
         self_doc_descr: str = None,
         self_metadata:list = None,
         metadata_parent_field:str = None,        
         k:int = None,
+        routing_field:str = None,       # field in metadata, which is used as condition  (field = value) for getting context for RAG
+        routing_text:str = None,        # text which is used for routing to RAG model
+        
         erase_history:bool = False,
         ):
         '''
@@ -269,11 +283,13 @@ class KBAQnA(object):
             For azure: deployment name gpt4, gpr35
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time (if is None then is unchanged)
         citation - True - at the end of answer add web page references, False - without web page references (if is None then is unchanged)
-        self_doc_descr - document description for Self Retriever
+        citation_field - field in metadata, which is used for citation (if is None then is unchanged)
+        self_doc_descr - document description for Self Retriever (if is None then is unchanged)
         self_metadata - metadata description list for Self Retriever (if isn't empty then is used Self Retriever)
         metadata_parent_field - Metadata field for parent doc (if is None then is unchanged)
         k - number of chunks retrieved from a vector database (if None then unchanged)
-        erase_history - True - erase history self.history for the project, False - history isn't erased
+        routing_field - field in metadata, which is used as condition  (field == value) for getting context for RAG (if is None then is unchanged)
+        erase_history - True - erase history for the project, False - history isn't erased
         '''       
         
         self._get_project_par(project)
@@ -285,7 +301,7 @@ class KBAQnA(object):
             if ( os.getenv("OPENAI_API_TYPE") == "open_ai"):
                 client = OpenAI()
                 if api_model in [item.id for item in client.models.list().data]:
-                    item["api_model"] = api_model
+                    # item["api_model"] = api_model
                     item2.api_model = api_model
                 else:
                     print(f"Error in set_project_par: Model '{api_model}' doesn't exist")
@@ -301,6 +317,9 @@ class KBAQnA(object):
         if citation != None:
             item2.add_citation = citation
 
+        if citation_field != None:
+            item2.citation_field = citation_field
+
         if self_doc_descr != None:
             item2.self_doc_descr = self_doc_descr
         
@@ -312,7 +331,10 @@ class KBAQnA(object):
             
         if k != None:
             item2.k = k
-  
+            
+        if routing_field != None:
+            item2.routing_field = routing_field
+
         self.projects[project] = item2
         
         # setting llm in self.projects[project].llm
@@ -320,22 +342,15 @@ class KBAQnA(object):
         
         # set retriever
         self.projects[project].set_retriever(
-            project = project,
             verbose = self.verbose,                
             )    
 
 
         if erase_history:
-            for item in self.history.copy():
-                if item["project"] == project:
-                    self.history.remove(item)             
+            self.projects[project].memory.clear_history()   # MEM
 
         # writing to protocol
-        api_model = item2.api_model
-        system_msg = item2.system_msg
-        answer_time = item2.add_answer_time
-        citation = item2.add_citation
-        protocol = f"proj_par: Model = {api_model}, System message = {system_msg}, Answer time = {answer_time}, Citation = {citation}"
+        protocol = f"proj_par: Model = {item2.api_model}, System message = {item2.system_msg}, Answer time = {item2.add_answer_time}, Citation = {item2.add_citation}"
         self.db.write_db_protocol(
             project = project,
             protocol =protocol,  )
@@ -352,6 +367,8 @@ class KBAQnA(object):
         project - project name (is collection name in vector db). Is mandatory.
 
         Parameters:
+        collection - collection name in a vector database
+        clone - True - clone project which was created from project <collection>, False - normal project (project = collection)
         system_msg - partial text which will be added at the begin of the system message 
         api_model - model of the ChatGPT API.
             For open_ai: gpt-3.5-turbo, gpt-3.5-turbo-0613, gpt-3.5-turbo-16k, gpt-3.5-turbo-16k-0613
@@ -359,28 +376,153 @@ class KBAQnA(object):
             For azure: deployment name         
         answer_time - True - answer is with elapsed time,  False - answer is without elapsed time
         citation - True - at the end of answer add web page references, False - without web page references
+        citation_field - field in metadata, which is used for citation
         self_doc_descr - document description for Self Retriever
         self_metadata - metadata description list for Self Retriever        
         metadata_parent_field - Metadata field for parent doc
+        routing_field - field in metadata, which is used as condition  (field == value) for getting context for RAG
         k - number of chunks retrieved from a vector database
+        retriever_weights - weights of retrievers (embedding retriever, SelfQueryRetriever, BM25, MultiQueryRetriever, ParentSelfQueryRetriever)
         '''       
         
         if project not in self.projects:
-            return {}
+            return {"error": f"Projekt {project} neexistuje"}
 
         item = self.projects[project]
   
         return {
-            "system_msg":       item.system_msg,
-            "api_model":        item.api_model,
-            "answer_time":      item.add_answer_time,
-            "citation":         item.add_citation,
-            "self_doc_descr":   item.self_doc_descr,
-            "self_metadata":    item.self_metadata,
+            "project":                  item.project,
+            "collection":               item.collection,
+            "clone":                    item.clone,
+            "system_msg":               item.system_msg,
+            "api_model":                item.api_model,
+            "add_answer_time":          item.add_answer_time,
+            "add_citation":             item.add_citation,
+            "citation_field":           item.citation_field,
+            "self_doc_descr":           item.self_doc_descr,
+            "self_metadata":            item.self_metadata,
             "metadata_parent_field" :   item.metadata_parent_field,
-            "k":                item.k,           
+            "routing_field":            item.routing_field,
+            "k":                        item.k,
+            "retriever_weights":        item.retriever_weights, 
+            
             }
 
+
+    def create_clone_project(self,
+        project:str = "",
+        clone_project:str = "",
+    )->str:
+        '''
+        Getting generated condition for SelfRetriever.
+        ----------------------------------------------------------------------------------------
+        Parameters:
+            project - project name. Is mandatory.
+            clone_project - new clone project (mandatory)
+            
+        returns:
+        OK - clone project was created
+        "Error: error description"
+       
+        '''
+        result = "OK"        
+
+        try:
+            item = replace(self._get_project_par(project))
+            
+            # checking parameters
+            if clone_project in self.projects:
+                return f"Error: klonovaný projekt {clone_project} již existuje. Nelze ho znovu vytvořit."
+            
+            item.project = clone_project
+            item.clone = True
+            self.projects[clone_project] = item
+
+        except Exception as e:  
+            result = f"Error: {e}"
+           
+        return result
+
+
+
+
+    def get_condensed_question(self,
+        project:str = "",
+        question:str = "",
+        user_id:str = "",
+    ) -> dict:
+        '''
+        Get project parameters.
+        ----------------------------------------------------------------------------------------
+        Parameters:
+            project - project name. Is mandatory.
+            question - question (mandatory)
+            user_id - unique user id (mandatory)
+              
+        returns:
+        {
+            "condensed_question": condensed question
+            "history":  communication history [[question, answer], …]
+            "error":  error
+        }
+
+            condensed_question – condensed question created on the communication history
+            error - normally it is empty. It contains a text error if there is a problem
+
+        '''
+        result = {"condensed_question": "", "history": None, "error": "" }        
+
+        try:
+            result["condensed_question"] = self._get_condensed_question(project, user_id, question)
+            result["history"] = self.projects[project].memory.get_history(user_id)     # MEM
+ 
+        except Exception as e:
+            result["condensed_question"] = self._filter_error(e)
+            result["error"] = "Azure policy error"
+            
+        return result
+    
+    def get_self_condition(self,
+        project:str = "",
+        question:str = "",
+    ):
+        '''
+        Getting generated condition for SelfRetriever.
+        ----------------------------------------------------------------------------------------
+        Parameters:
+            project - project name. Is mandatory.
+            question - question (mandatory)
+                
+        returns:
+            generated condition for SelfRetriever
+
+
+        '''
+        self._get_project_par(project)
+           
+        return self.projects[project].get_self_condition(question)
+
+    # @print_durations() 
+    def get_context(self,
+        project:str = "",
+        question:str = "",
+    ) -> list:
+        '''
+        Getting generated context for retriever
+        ----------------------------------------------------------------------------------------
+        Parameters:
+            project - project name. Is mandatory.
+            question - question (mandatory)
+                
+        returns:
+        [chunk list of the context from vector database]
+   
+
+        '''
+        retriever = self._get_retriever( project=project )
+        contexts = retriever.get_relevant_documents(question)
+            
+        return contexts
 
 
 
@@ -430,27 +572,44 @@ BM25 = {retriever_weights[2]}, MultiRetriever = {retriever_weights[3]}, SelfRetr
         """
         st = time.time()
         
-        # getting project parameters
-        (pr_system_message, pr_api_model, pr_answer_time, citation, self_doc_descr, self_metadata) = self._get_project_par(project)
+        # getting project parameters self.project[project]
+        project_par = self._get_project_par(project)
 
         # nove reseni RAG
-        condensed_question = self._get_condensed_question(project, user_id, question)
-        chain = self._get_qa_lcel (project, pr_system_message, pr_api_model, self_doc_descr, self_metadata, condensed_question)
+        context_num = 0
+        try:
+            # creating independent question from question + conversation history
+            condensed_question = self._get_condensed_question(project, user_id, question)
+            
+            # generating routing value, which is used for precise question
+            if project_par.routing_field:
+                filter_value = self._get_routing_value(project = project, question = condensed_question)
+                if filter_value:
+                    condensed_question += f" {project_par.routing_field} = '{filter_value}'"
 
-        # https://python.langchain.com/docs/modules/model_io/llms/token_usage_tracking        
-        with get_openai_callback() as cb:
-            result_chain = chain.invoke(input = condensed_question)
- 
-        # number chunks of the context
-        context_num = result_chain["documents"]
- 
-        if context_num == 0:
-            answer = "Nevím"
-        else:
-            answer = result_chain["answer"]
+            # generating answer from RAG
+            chain = self._get_qa_lcel (project, project_par.system_msg, condensed_question)
 
+            # https://python.langchain.com/docs/modules/model_io/llms/token_usage_tracking        
+            with get_openai_callback() as cb:
+                result_chain = chain.invoke(input = condensed_question)
+ 
+            # number chunks of the context
+            context_num = len(result_chain["documents"])
+ 
+            if context_num == 0:
+                answer = "Nevím"
+            else:
+                answer = result_chain["answer"]
+        except Exception as e:
+            answer = self._filter_error(e)
+            condensed_question = None
+            cb = OpenAICallbackHandler()
+            cb.prompt_tokens = 0
+            cb.completion_tokens = 0
+            cb.total_cost = 0      
         
-        self._add_history(project, user_id, question, answer)   # save question/answer to the conversation history
+        self.projects[project].memory.add_history(user_id, question, answer)    # save question/answer to the conversation history # MEM
 
         et = time.time()
   
@@ -465,18 +624,18 @@ BM25 = {retriever_weights[2]}, MultiRetriever = {retriever_weights[3]}, SelfRetr
             question = question,
             condensed_question = condensed_question,
             answer=answer,
-            api_model = pr_api_model,
+            api_model = project_par.api_model,
             elapsed_time = et - st,
             prompt_tokens = cb.prompt_tokens,
             completion_tokens = cb.completion_tokens,
             total_cost = cb.total_cost,            
         )
           
-        if citation:
-            answer += self._get_citation_chain(result_chain)
+        if project_par.add_citation and context_num > 0 and not answer.startswith("Nevím"):
+            answer += self._get_citation_chain(result_chain, project_par.citation_field)
 
 
-        if pr_answer_time:
+        if project_par.add_answer_time:
             answer += f" ({round(et - st, 3)} s)"
             
         return answer
@@ -487,115 +646,52 @@ BM25 = {retriever_weights[2]}, MultiRetriever = {retriever_weights[3]}, SelfRetr
         ):
         """
         Generate dataset item for one question. It is used in RAGAS.
-
-        Before running should be setup  set_project_par with citatio=True.
         Generating doesn't work with history
         -------------------------------------------------------------------------
         question - question (is mandatory)
         project - project name (is collection name in vector db). Is mandatory.
  
-        returns data_item = {'question': question, 'answer': answer, 'contexts': []}  
+        returns data_item = {'question': question, 'answer': answer, 'contexts': [...]}  
         """
  
         # getting project parameters
-        (pr_system_message, pr_api_model, pr_answer_time, citation, self_doc_descr, self_metadata) = self._get_project_par(project)
+        project_par = self._get_project_par(project)
 
-        '''
-        qa = self._get_qa(project, pr_system_message, pr_api_model, self_doc_descr, self_metadata)
-        
+          # nove reseni RAG
+        context_num = 0; contexts = []
         try:
-            response = qa({"question": question, "chat_history": []})  # get answer
-            answer = response["answer"]
-            contexts = [doc.page_content for doc in response["source_documents"]]
-        except Exception as e:
-            answer = self._filter_error(e)
-            contexts = []
-        '''
-        
-        # nove reseni RAG
-        chain = self._get_qa_lcel (project, pr_system_message, pr_api_model, self_doc_descr, self_metadata, question)
-        result_chain = chain.invoke(input = question)
-        answer = result_chain["answer"]
-        contexts = [doc.page_content for doc in result_chain["documents"]]
+            # generating routing value, which is used for precise question
+            if project_par.routing_field:
+                filter_value = self._get_routing_value(project = project, question = question)
+                if filter_value:
+                    question += f" {project_par.routing_field} = '{filter_value}'"
 
+            # generating answer from RAG
+            chain = self._get_qa_lcel (project, project_par.system_msg, question)
+
+            # https://python.langchain.com/docs/modules/model_io/llms/token_usage_tracking        
+            result_chain = chain.invoke(input = question)
+ 
+            # number chunks of the context
+            context_num = len(result_chain["documents"])
+ 
+            if context_num == 0:
+                answer = "Nevím"
+            else:
+                answer = result_chain["answer"]
+                contexts = result_chain["contexts"]
+ 
+        except Exception as e:
+            answer = "Nevím. " + self._filter_error(e)
+ 
+ 
         return {'question': question, 'answer': answer, 'contexts': contexts}    
 
-
-
-
-
-    def _get_history(self,
-        project: str ="",        # project
-        user_id: str ="",        # user id
-    ):
-        """
-        Get history for user
-        chat history -> self.history
-         [("project":project, "user_id":user_id, "last_time":last_time, "history":[(question, answer),...]), ...]
-        """
-        
-        # find index user item
-        index = None
-        for i, element in enumerate(self.history): 
-            if element["project"] == project and element["user_id"] == user_id:
-                index = i
-                break
-
-        # add new user
-        if index == None:
-            history = []
-        else:
-            # update item
-            history = self.history[index]["history"]
-
-        # print(f"Project: {project} Usere id: {user_id} History: \n{history}\n") 
-
-        return history
-
-
-    def _add_history(self,
-        project: str ="",        # project
-        user_id: str ="",        # user id
-        question:str="",
-        answer:str="",
-    ):
-        """
-        Add question, answer to history.
-        Shrink the history to self.k_history length.
-        Clearing the history after the time interval.
-        
-        chat history -> self.history
-         [("project":project, "user_id":user_id, "last_time":last_time, "history":[(qusetion, answer),...]), ...]
-        """
-        # Clearing the history after the time interval.
-        self.history[:] = [item for item in self.history if time.time() - item["last_time"] <= self.time_limit_history]
-
-        # find index user item
-        index = None
-        for i, element in enumerate(self.history): 
-            if element["project"] == project and element["user_id"] == user_id:
-                index = i
-                break
-        
-        if index == None:
-            # add new user
-            item = { "project":project, "user_id":user_id, "last_time":time.time(), "history":[(question, answer)]}
-            self.history.append(item)
-        else:
-            # update item
-            item = self.history[index]
-            item["last_time"] = time.time()
-            item["history"].append((question, answer))
-            item["history"] = item["history"][-self.k_history:]
-            self.history[index] = item
-      
+   
 
     def _get_qa_lcel(self,
         project:str = "",
         system_msg:str = "",
-        api_model:str="",
-        self_doc_descr:str="",
-        self_metadata:list=[],
         query:str="",
         
      ):
@@ -604,13 +700,9 @@ BM25 = {retriever_weights[2]}, MultiRetriever = {retriever_weights[3]}, SelfRetr
         -------------------------------------------------------------------------
         project - project name (is collection name in vector db). Is mandatory.
         system_msg - partial text which will be added at the begin of the system message
-        api_model - model of the ChatGPT API. (if empty then environment variable "OPENAI_API_MODEL_GPT" is used)
-            For open_ai: gpt-3.5-turbo, gpt-3.5-turbo-0613, gpt-3.5-turbo-16k, gpt-3.5-turbo-16k-0613
-                         gpt-4, gpt-4-0613, gpt-4-32k, gpt-4-32k-0613
-            For azure: deployment name 
         query - query only for get context for verbose == True
 
-        returns answer
+        returns (chain for generatung answer)
         """
 
         def format_docs(docs):
@@ -674,11 +766,12 @@ Pokud nelze na základě vědomostí jednoznačně odpovědět, tvoje odpověď 
         ) | {
             "documents": lambda input: [doc.metadata for doc in input["documents"]],
             "answer": rag_chain_from_docs,
+            "contexts": lambda input: [doc.page_content for doc in input["documents"]],
         }
 
         return rag_chain_with_source
 
-
+    # @print_durations() 
     def _get_condensed_question(self,
         project:str = "",
         user_id:str="",
@@ -694,17 +787,12 @@ Pokud nelze na základě vědomostí jednoznačně odpovědět, tvoje odpověď 
             
         returns condensed question
         """
-
-        history = self._get_history(project, user_id)   # get a last conversation history
+        chat_history = self.projects[project].memory.get_history(user_id)   # get a last conversation history   # MEM
         
         # when history is empty then question can't be condensed
-        if len(history) == 0:
+        if len(chat_history) == 0:
             return question
-        
-        chat_history = []
-        for query, answer in history:
-            chat_history.append(HumanMessage(content=query))
-            chat_history.append(AIMessage(content=answer))
+ 
 
         CONDENSE_Q_SYSTEM_PROMPT = """S ohledem na historii konverzace a nejnovější uživatelskou otázku, která by mohla odkazovat na historii konverzace, \
 formulujte samostatnou otázku, které lze porozumět i bez historie konverzace. \
@@ -736,6 +824,69 @@ just reformulate it if needed and otherwise return it as is."""
         return condensed_question
 
 
+    # @print_durations() 
+    def _get_routing_value(self,
+        project:str = "",
+        question:str="",
+        id_text:str="UCEL"
+     ) -> str:
+        """
+        Return routing value for metadata fiel
+        -------------------------------------------------------------------------
+        project - project name (is collection name in vector db). Is mandatory.
+        system_msg - partial text which will be added at the begin of the system message
+        user_id - user id
+        question - actual question
+            
+        returns condensed question
+        """
+        routing_field = self.projects[project].routing_field     
+        if routing_field == None:
+            return None
+
+        text_data = self.projects[project].get_routing_text(id_text)
+        if text_data == None:
+            return None
+
+        TEMPLATE = """Vyhledej hodnotu položky "{routing_field}" z níže zadaného kontextu, která nejlépe odpovídá zadané otázce.
+{format_instructions}
+
+Kontext:
+
+{context}
+
+#####
+Otázka: {question}
+
+Přísně dodržuj výstupní JSON formát.
+"""
+        try:
+            # Define your desired data structure.
+            class FieldRouter(BaseModel):
+                """ Hodnota nalezené položky z kontextu """                
+                cccc: str = Field(description=f"Hodnota položky {routing_field}")
+
+
+            # Set up a parser + inject instructions into the prompt template.
+            parser = JsonOutputParser(pydantic_object=FieldRouter)
+
+            prompt = PromptTemplate(
+                template = TEMPLATE,
+                input_variables=["question"],
+                partial_variables={"format_instructions": parser.get_format_instructions()},
+            )
+
+            chain = prompt | self.llm_condensed | parser
+
+            answer = chain.invoke({"routing_field":routing_field, "context":text_data, "question": question})
+
+            return answer.get("cccc")
+        except Exception as e:
+            return None     # when JSON isn't well formated then returns None
+        
+  
+
+
     def _set_retriever(self,
         project:str,
         ):
@@ -759,7 +910,6 @@ just reformulate it if needed and otherwise return it as is."""
             # setting vectorstore
             if self.projects[project].vectorstore == None:
                 self.projects[project].set_vectorstore(
-                    project = project,
                     db_type = self.db_type,
                     db_client = self.db_client,
                     embeddings = self.embeddings,
@@ -767,7 +917,6 @@ just reformulate it if needed and otherwise return it as is."""
 
             # setting retrievers
             self.projects[project].set_retriever(
-                project = project,
                 verbose = self.verbose,             
                 )
 
@@ -797,10 +946,11 @@ just reformulate it if needed and otherwise return it as is."""
    
     
     def _get_citation_chain(self,
-        response    
+        response:dict,
+        citation_field:str = "source",
         ) -> str:
         """
-        Return reference list to web pages.
+        Return reference list to web pages. Maximum citations = 1.
         For example
         
         Další informace:
@@ -808,10 +958,13 @@ just reformulate it if needed and otherwise return it as is."""
         2. https://www.multima.cz/mentor
         3. https://www.keymate.cz
         -------------------------------------------------------------------------
-        response - responce object from ConversationalRetrievalChain()
+        response - response object from ConversationalRetrievalChain()
+        citation_field - citation field in metadata, which is used for citation
 
         returns text citation list
         """
+        max_citations = 1        
+
         if response == None:
             return ""
 
@@ -819,16 +972,16 @@ just reformulate it if needed and otherwise return it as is."""
         
         # select web references with order
         for item in response["documents"]:
-            ref = item["source"]
-            if ref.startswith("https:") and ref not in reference_list:
+            ref = item.get(citation_field)
+            if ref and (ref not in reference_list):
                 reference_list.append(ref)
 
         # create reference text
         citation_text = ""
-        for row, item in enumerate(reference_list):
-            citation_text += f"\n{row + 1}. {item}"
+        for row, item in enumerate(reference_list, 1):
+            citation_text += f"\n{row}. {item}"
 
-            if row >= 2:
+            if row >= max_citations:
                 break;
 
         if citation_text != "":
@@ -837,7 +990,7 @@ just reformulate it if needed and otherwise return it as is."""
         return citation_text
 
 
-
+    # @print_durations() 
     def _get_project_par(self,
         project:str = "",
     )->tuple:
@@ -847,10 +1000,12 @@ just reformulate it if needed and otherwise return it as is."""
         -------------------------------------------------------------------------
         project - project name. Is mandatory.
 
-        returns (system_msg, api_model, add_answer_time, add_citation, self_doc_descr, self_metadata)
+        returns project item
         """
         if project not in self.projects:
             item = Project(
+                project = project,
+                collection = project,
                 system_msg = self.system_msg,
                 api_model = os.getenv("OPENAI_API_MODEL_GPT"),
                 add_answer_time = self.answer_time,
@@ -858,27 +1013,27 @@ just reformulate it if needed and otherwise return it as is."""
                 self_doc_descr = "",
                 self_metadata = [],
                 metadata_parent_field = "",
+                k_history = self.k_history,
+                time_limit_history = self.time_limit_history,
                 )            
 
-            self.projects[project] = item
- 
-            self.projects[project].set_llm()
+            item.set_memory()   # set conversation memory
+
+            item.set_llm()      # set LLM
             
-            self.projects[project].set_vectorstore(
-                project = project,
+            item.set_vectorstore(
                 db_type = self.db_type,
                 db_client = self.db_client,
                 embeddings = self.embeddings,
             )
             
-            self.projects[project].set_retriever(
-                project = project,
+            item.set_retriever(
                 verbose = self.verbose,     
             )
- 
-        item = self.projects[project]
-        
-        return (item.system_msg, item.api_model, item.add_answer_time, item.add_citation, item.self_doc_descr, item.self_metadata)
+
+            self.projects[project] = item
+
+        return self.projects[project]
     
      
     def _filter_error(self,
@@ -952,3 +1107,26 @@ just reformulate it if needed and otherwise return it as is."""
             value_set.add(value)
 
         return [value for value in value_set]
+    
+    def get_projects(self,
+        ) -> list[str]:
+        '''
+        Get list projects from self.projects
+        Args:
+        '''
+        return list(self.projects.keys())
+
+
+    def get_users(self,
+        ) -> list:
+        '''
+        Get list users info from history
+        Args:
+        '''
+        data = []
+        
+        for project in list(self.projects.values()):
+            data.append({project.project:project.memory.get_users()})
+            
+        return data
+         

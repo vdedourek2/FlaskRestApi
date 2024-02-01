@@ -17,14 +17,15 @@ All questions/answers are recorded in a SQL database and can be used for further
 ## Requirements (libraries)
 1. Flask - framework for web application
 2. Flask-HTTPAuth - Simple extension that provides Basic and Digest HTTP authentication for Flask routes.
-2. OpenAI - ChatBot GPT API
+2. openai - ChatBot GPT API
 3. load-dotenv - processing environment variable
-5. chromadb - Chromadb database API (ver 0.3.29 needed for compatibility with sqlite3)
-8. tiktoken - GPT2 tokenizer
-9. Qdrant - Qdrant vector database
-8. psycopg2 - PostgreSQL database API
-11. gunicorn - LINUX server for web application running
-14. LangChain - framework for developing applications powered by language models
+4. chromadb - Chromadb database API (ver 0.3.29 needed for compatibility with sqlite3)
+5. tiktoken - GPT2 tokenizer
+6. qdrant - Qdrant vector database
+7. psycopg2 - PostgreSQL database API
+8. gunicorn - LINUX server for web application running
+9. langchain - framework for developing applications powered by language models
+10. langchai-openai - Langchain support for OpenAI
 
 ![Structure](structure.png)
 
@@ -65,6 +66,7 @@ Run ```pip install -U tiktoken``` to install ```tiktoken```
 Run ```pip install -U qdrant-client``` to install ```Qdrant```  
 Run ```pip install -U gunicorn``` to install ```gunicorn```  
 Run ```pip install -U langchain``` to install ```langchain```  
+Run ```pip install -U langchain-openai``` to install ```langchain-openai```  
 
 5. Create requirements.txt from virtual environment.  
 6. Add solution to source Control (GitHub. Repository = PythonApplication)  
@@ -76,6 +78,10 @@ From requirements.txt remove pywin32==306 before installation in cloude (Azure).
 Repository PythonApplication is created from VisualStudio.
 
 https://github.com/vdedourek2
+
+Gitlab repository
+
+https://gitlab.multima.cz/mm-products/kba
 
 Create **PythonFlaskRestApi** repository and copy from PythonFlaskRestApi project.
 Delete env. file in FlaskRepository.
@@ -130,6 +136,8 @@ then you have to install gunicorn library to requirments.txt
 ## Access on web
 
 https://appmultimachatbot.azurewebsites.net/
+
+https://mm-kba-dev.azurewebsites.net/
 
 
 ## Regards,

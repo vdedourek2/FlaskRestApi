@@ -19,6 +19,7 @@
     <InterpreterId>MSBuild|envFlaskRestAPI|$(MSBuildProjectFullPath)</InterpreterId>
     <EnableNativeCodeDebugging>False</EnableNativeCodeDebugging>
     <UseIISExpress>true</UseIISExpress>
+    <SuppressPackageInstallationPrompt>True</SuppressPackageInstallationPrompt>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -38,6 +39,9 @@
     <Compile Include="Processing\project_mod.py" />
     <Compile Include="Processing\qdrant_bm25_mod.py" />
     <Compile Include="Processing\qna_lch_mod.py" />
+    <Compile Include="Routes\diagnostic_routes.py">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="Routes\project_par_routes.py">
       <SubType>Code</SubType>
     </Compile>
@@ -50,8 +54,10 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include=".env" />
+    <Content Include="ChatBot - KBA Rest API.docx" />
     <Content Include="ChatBot - KBA.docx" />
     <Content Include="file.png" />
+    <Content Include="KBA.archimate" />
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
     <Content Include="structure.png" />

@@ -55,6 +55,7 @@ from init import users, auth  # Import initialized components from init.py
 from Routes.qna_routes import qna_blueprint                 # Query/answer API
 from Routes.srv_par_routes import srv_par_blueprint         # Server API
 from Routes.project_par_routes import project_par_blueprint # Project API
+from Routes.diagnostic_routes import diagnostic_blueprint   # Diagnostic API
 
 
 app = Flask(__name__)
@@ -63,6 +64,7 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY")
 app.register_blueprint(qna_blueprint)
 app.register_blueprint(srv_par_blueprint)
 app.register_blueprint(project_par_blueprint)
+app.register_blueprint(diagnostic_blueprint)
 
 
 @auth.verify_password
